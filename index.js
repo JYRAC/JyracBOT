@@ -176,7 +176,7 @@ client.on('interactionCreate', async interaction => {
             return await safeReply({ content: '完了しました！', flags: MessageFlags.Ephemeral });
         }
         if (commandName === 'broadcast') {
-    // 1. パスワード等の確認（これらは処理が速いので先にやる）
+    // 1. パスワード確認のみ行う（ここはawaitしても高速）
     if (options.getString('password') !== process.env.BROADCAST_PASSWORD) {
         return await interaction.reply({ content: 'パスワードが違います。', flags: MessageFlags.Ephemeral });
     }
@@ -184,13 +184,19 @@ client.on('interactionCreate', async interaction => {
     const role = options.getRole('target-role');
     broadcastRoleMap.set(interaction.user.id, role.id);
 
-    const modal = new ModalBuilder().setCustomId('broadcast_modal').setTitle('ロール宛 一斉送信');
+    // 2. モーダル作成
+    const modal = new ModalBuilder()
+        .setCustomId('broadcast_modal')
+        .setTitle('ロール宛 一斉送信');
+    
     modal.addComponents(
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('msg').setLabel('送信メッセージ').setStyle(TextInputStyle.Paragraph).setRequired(true)),
         new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('file_url').setLabel('画像/ファイルURL (任意)').setStyle(TextInputStyle.Short).setRequired(false))
-    　　);
-   　　 await interaction.showModal(modal);
-　　　 }
+    );
+
+    // 3. ★最速でモーダルを表示する（deferReplyはここではしない）
+    return await interaction.showModal(modal);
+　　　}
     }
 
     // --- モーダル送信の処理 ---
