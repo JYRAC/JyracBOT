@@ -23,20 +23,54 @@ const activities = [
 ];
 
 const commands = [
-    new SlashCommandBuilder().setName('verify').setDescription('認証パネルを作成').addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true)).addStringOption(o => o.setName('title').setDescription('パネルタイトル')).addStringOption(o => o.setName('description').setDescription('説明文')).setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
-    new SlashCommandBuilder().setName('ticket').setDescription('チケットパネルを作成').addRoleOption(o => o.setName('admin-role').setDescription('対応管理ロール').setRequired(true)).addStringOption(o => o.setName('title').setDescription('タイトル')).addStringOption(o => o.setName('description').setDescription('説明文')).addStringOption(o => o.setName('panel-desc').setDescription('チケット作成時メッセージ')).setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
-    new SlashCommandBuilder().setName('role-confirmation').setDescription('指定ユーザーのロールを確認').addUserOption(o => o.setName('target').setDescription('確認対象').setRequired(true)).setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers),
-    new SlashCommandBuilder().setName('delete').setDescription('メッセージを一括削除').addIntegerOption(o => o.setName('amount').setDescription('件数(1-100)').setRequired(true)).setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
+    
+    new SlashCommandBuilder().setName('verify').setDescription('認証パネルを作成')
+    .addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true))
+    .addStringOption(o => o.setName('title').setDescription('パネルタイトル'))
+    .addStringOption(o => o.setName('description').setDescription('説明文'))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+    
+    new SlashCommandBuilder().setName('ticket').setDescription('チケットパネルを作成')
+    .addRoleOption(o => o.setName('admin-role').setDescription('対応管理ロール').setRequired(true))
+    .addStringOption(o => o.setName('title').setDescription('タイトル'))
+    .addStringOption(o => o.setName('description').setDescription('説明文'))
+    .addStringOption(o => o.setName('panel-desc').setDescription('チケット作成時メッセージ'))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+    
+    new SlashCommandBuilder().setName('role-confirmation').setDescription('指定ユーザーのロールを確認')
+    .addUserOption(o => o.setName('target').setDescription('確認対象').setRequired(true))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers),
+    
+    new SlashCommandBuilder().setName('delete').setDescription('メッセージを一括削除')
+    .addIntegerOption(o => o.setName('amount').setDescription('件数(1-100)').setRequired(true))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
+    
     new SlashCommandBuilder().setName('help').setDescription('コマンド一覧と詳細を表示'),
-    new SlashCommandBuilder().setName('give-role').setDescription('ロールを付与').addUserOption(o => o.setName('target').setDescription('対象').setRequired(true)).addRoleOption(o => o.setName('role').setDescription('ロール').setRequired(true)).setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
-    new SlashCommandBuilder().setName('remove-role').setDescription('ロールを剥奪').addUserOption(o => o.setName('target').setDescription('対象').setRequired(true)).addRoleOption(o => o.setName('role').setDescription('ロール').setRequired(true)).setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+    
+    new SlashCommandBuilder().setName('give-role').setDescription('ロールを付与')
+    .addUserOption(o => o.setName('target').setDescription('対象').setRequired(true))
+    .addRoleOption(o => o.setName('role').setDescription('ロール').setRequired(true))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+    
+    new SlashCommandBuilder().setName('remove-role').setDescription('ロールを剥奪')
+    .addUserOption(o => o.setName('target').setDescription('対象').setRequired(true))
+    .addRoleOption(o => o.setName('role').setDescription('ロール').setRequired(true))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+    
     new SlashCommandBuilder().setName('receive-notifications').setDescription('重要なお知らせの通知登録を行う'),
-    new SlashCommandBuilder().setName('notice').setDescription('お知らせを送信(管理者専用)').addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true)).setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles)
+    new SlashCommandBuilder().setName('notice').setDescription('お知らせを送信(管理者専用)')
+    .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles)
 ].map(c => c.toJSON());
 
-client.once('clientReady', async () => {
+client.once('ready', async () => { // clientReady ではなく ready が一般的
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    try {
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        console.log('Commands registered.');
+    } catch (error) {
+        console.error(error);
+    }
     setInterval(() => {
         client.user.setActivity(activities[Math.floor(Math.random() * activities.length)], { type: ActivityType.Custom });
     }, 15000);
@@ -50,6 +84,7 @@ client.on('interactionCreate', async interaction => {
     if (interaction.replied || interaction.deferred) return;
     const safeReply = async (data) => { if (!interaction.replied && !interaction.deferred) return await interaction.reply(data); };
 
+    // --- スラッシュコマンドの処理 ---
     if (interaction.isChatInputCommand()) {
         const { commandName, options } = interaction;
 
@@ -67,7 +102,7 @@ client.on('interactionCreate', async interaction => {
                 new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('content').setLabel('内容').setStyle(TextInputStyle.Paragraph).setRequired(true)),
                 new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('url').setLabel('URL（任意）').setStyle(TextInputStyle.Short).setRequired(false))
             );
-            try { await interaction.showModal(modal); } catch (e) { console.error(e); }
+            return await interaction.showModal(modal);
         }
         if (commandName === 'help') {
             const embed = new EmbedBuilder().setTitle('📜 コマンド一覧').setDescription('詳細を確認したいコマンドを選択してください。').setColor(0x00AE86);
@@ -86,7 +121,10 @@ client.on('interactionCreate', async interaction => {
         if (commandName === 'delete') {
             const amount = options.getInteger('amount');
             const embed = new EmbedBuilder().setTitle('⚠️ 削除確認').setDescription(`本当に **${amount}件** 削除しますか？`).setColor(0xFF0000);
-            const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`bulk_delete_yes_${amount}`).setLabel('削除実行').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId('bulk_delete_no').setLabel('キャンセル').setStyle(ButtonStyle.Secondary));
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`bulk_delete_yes_${amount}`).setLabel('削除実行').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId('bulk_delete_no').setLabel('キャンセル').setStyle(ButtonStyle.Secondary)
+            );
             return await safeReply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
         }
         if (commandName === 'verify') {
@@ -95,24 +133,6 @@ client.on('interactionCreate', async interaction => {
             const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`v_role_${role.id}`).setLabel('✅ 認証').setStyle(ButtonStyle.Success));
             return await safeReply({ embeds: [embed], components: [row] });
         }
-        if (customId === 'help_select') {
-            const helpData = {
-                help_verify: { title: '/verify', desc: '【内容】認証パネルを作成します。\n【詳細】ボタンを押したユーザーに指定したロールを付与します。' },
-                help_ticket: { title: '/ticket', desc: '【内容】チケットパネルを作成します。\n【詳細】問い合わせチャンネルを生成し、管理者へ通知します。' },
-                help_role: { title: '/role-confirmation', desc: '【内容】ロール確認\n【詳細】指定した対象の現在のロール一覧を表示します。' },
-                help_delete: { title: '/delete', desc: '【内容】メッセージ一括削除\n【詳細】指定した件数(1-100)のメッセージを削除します。' },
-                help_giverole: { title: '/give-role', desc: '【内容】ロール付与\n【詳細】指定したユーザーに特定のロールを付与します。' },
-                help_removerole: { title: '/remove-role', desc: '【内容】ロール剥奪\n【詳細】指定したユーザーから特定のロールを剥奪します。' },
-                help_notice: { title: '/notice', desc: '【内容】お知らせ送信\n【詳細】パスワード認証後、通知登録者全員に一斉DMを送信します。' },
-                help_notify: { title: '/receive-notifications', desc: '【内容】通知登録\n【詳細】お知らせを受け取るためのリストに自身を登録します。' }
-            };
-            
-            const selected = interaction.values[0];
-            const data = helpData[selected];
-            await interaction.update({ 
-                embeds: [new EmbedBuilder().setTitle(`📖 ${data.title}`).setDescription(data.desc).setColor(0x00AE86)], 
-                components: [interaction.message.components[0]] 
-            });
         if (commandName === 'ticket') {
             const adminRole = options.getRole('admin-role');
             const key = `msg_${Date.now()}`;
@@ -123,6 +143,7 @@ client.on('interactionCreate', async interaction => {
         }
         if (commandName === 'role-confirmation') {
             const member = await interaction.guild.members.fetch(options.getUser('target').id).catch(() => null);
+            if (!member) return await safeReply({ content: 'ユーザーが見つかりませんでした。', flags: MessageFlags.Ephemeral });
             const roles = member.roles.cache.filter(r => r.name !== '@everyone').map(r => r.name).join('\n') || 'なし';
             return await safeReply({ content: `ロール一覧:\n\`\`\`\n${roles}\n\`\`\``, flags: MessageFlags.Ephemeral });
         }
@@ -134,6 +155,7 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
+    // --- モーダル送信の処理 ---
     if (interaction.isModalSubmit() && interaction.customId === 'notice_modal') {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const embed = new EmbedBuilder().setTitle(`📢 ${interaction.fields.getTextInputValue('title')}`).setDescription(`${interaction.fields.getTextInputValue('content')}\n\n${interaction.fields.getTextInputValue('url') ? `🔗 [詳細はこちら](${interaction.fields.getTextInputValue('url')})` : ''}`).setFooter({ text: `発信者: ${interaction.fields.getTextInputValue('sender')}` }).setColor(0x00FF00);
@@ -143,43 +165,55 @@ client.on('interactionCreate', async interaction => {
         return await interaction.editReply(`${count} 名に送信しました。`);
     }
 
+    // --- ボタン・セレクトメニューの処理 ---
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
         const { customId } = interaction;
+
+        if (customId === 'help_select') {
+            const helpData = {
+                help_verify: { title: '/verify', desc: '【内容】認証パネルを作成します。\n【詳細】ボタンを押したユーザーに指定したロールを付与します。' },
+                help_ticket: { title: '/ticket', desc: '【内容】チケットパネルを作成します。\n【詳細】問い合わせチャンネルを生成し、管理者へ通知します。' },
+                help_role: { title: '/role-confirmation', desc: '【内容】ロール確認\n【詳細】指定した対象の現在のロール一覧を表示します。' },
+                help_delete: { title: '/delete', desc: '【内容】メッセージ一括削除\n【詳細】指定した件数(1-100)のメッセージを削除します。' },
+                help_giverole: { title: '/give-role', desc: '【内容】ロール付与\n【詳細】指定したユーザーに特定のロールを付与します。' },
+                help_removerole: { title: '/remove-role', desc: '【内容】ロール剥奪\n【詳細】指定したユーザーから特定のロールを剥奪します。' },
+                help_notice: { title: '/notice', desc: '【内容】お知らせ送信\n【詳細】パスワード認証後、通知登録者全員に一斉DMを送信します。' },
+                help_notify: { title: '/receive-notifications', desc: '【内容】通知登録\n【詳細】お知らせを受け取るためのリストに自身を登録します。' }
+            };
+            const selected = interaction.values[0];
+            const data = helpData[selected];
+            return await interaction.update({
+                embeds: [new EmbedBuilder().setTitle(`📖 ${data.title}`).setDescription(data.desc).setColor(0x00AE86)],
+                components: [interaction.message.components[0]]
+            });
+        }
+
         if (customId.startsWith('bulk_delete_yes_')) {
-            await interaction.channel.bulkDelete(parseInt(customId.split('_')[3]), true);
+            const amount = parseInt(customId.split('_')[3]);
+            await interaction.channel.bulkDelete(amount, true);
             return await interaction.update({ content: '削除しました。', embeds: [], components: [] });
         }
         if (customId === 'bulk_delete_no') return await interaction.update({ content: 'キャンセルしました。', embeds: [], components: [] });
+        
         if (customId.startsWith('v_role_')) {
             await interaction.member.roles.add(customId.split('_')[2]);
             return await safeReply({ content: 'ロールを付与しました！', flags: MessageFlags.Ephemeral });
         }
+
         if (customId.startsWith('tkt_')) {
             const [_, adminId, key] = customId.split('_');
-            
-            // ★ここを修正：メッセージがない場合はデフォルト文を指定する
-            const customMessage = ticketMessages.get(key) || 'お問い合わせありがとうございます。\n以下のロールを持っている担当者が来るまで少々お待ちください。\n by 作成者';
-            
-            const ch = await interaction.guild.channels.create({ 
-                name: `🎫-${interaction.user.username}`, 
-                type: ChannelType.GuildText 
+            const customMessage = ticketMessages.get(key) || 'お問い合わせありがとうございます。';
+            const ch = await interaction.guild.channels.create({
+                name: `🎫-${interaction.user.username}`,
+                type: ChannelType.GuildText
             });
-
-            // チャンネル内にメッセージを送信
-            await ch.send({ 
-                content: `${interaction.user} ${customMessage} <@&${adminId}>`, 
-                components: [
-                    new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('t_close_c').setLabel('閉じる').setStyle(ButtonStyle.Danger)
-                    )
-                ] 
+            await ch.send({
+                content: `${interaction.user} ${customMessage} <@&${adminId}>`,
+                components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_close_c').setLabel('閉じる').setStyle(ButtonStyle.Danger))]
             });
-
-            return await safeReply({ 
-                content: `チケットを作成しました: ${ch}`, 
-                flags: MessageFlags.Ephemeral 
-            });
+            return await safeReply({ content: `チケットを作成しました: ${ch}`, flags: MessageFlags.Ephemeral });
         }
+
         if (customId === 't_close_c') {
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('t_yes').setLabel('削除').setStyle(ButtonStyle.Danger),
@@ -187,8 +221,11 @@ client.on('interactionCreate', async interaction => {
             );
             return await interaction.reply({ content: '本当にチケットを削除しますか？', components: [row], flags: MessageFlags.Ephemeral });
         }
+        
+        if (customId === 't_yes') {
+            await interaction.channel.delete();
+        }
 
-        // 削除確認で「キャンセル」が押された場合
         if (customId === 't_no') {
             return await interaction.update({ content: '削除をキャンセルしました。', components: [] });
         }
