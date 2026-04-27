@@ -63,7 +63,7 @@ const commands = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles)
 ].map(c => c.toJSON());
 
-client.once('ready', async () => { // clientReady ではなく ready が一般的
+client.once('clientReady', async () => { // clientReady ではなく ready が一般的
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
