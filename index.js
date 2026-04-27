@@ -14,6 +14,7 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages]
 });
 
+const broadcastRoleMap = new Map();
 const ticketMessages = new Map();
 const activities = [
     "JYRAC公式Instはこちら！▶https://www.instagram.com/jyrac_official/",
