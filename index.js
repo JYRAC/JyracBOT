@@ -194,7 +194,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     // --- モーダル送信の処理 ---
-    if (interaction.isModalSubmit() && interaction.customId === 'notice_modal') {
+    else if (interaction.isModalSubmit() && interaction.customId === 'notice_modal') {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const embed = new EmbedBuilder().setTitle(`📢 ${interaction.fields.getTextInputValue('title')}`).setDescription(`${interaction.fields.getTextInputValue('content')}\n\n${interaction.fields.getTextInputValue('url') ? `🔗 [詳細はこちら](${interaction.fields.getTextInputValue('url')})` : ''}`).setFooter({ text: `発信者: ${interaction.fields.getTextInputValue('sender')}` }).setColor(0x00FF00);
         const subs = await db.collection('subscribers').get();
@@ -202,48 +202,47 @@ client.on('interactionCreate', async interaction => {
         for (const doc of subs.docs) { try { const user = await client.users.fetch(doc.id); await user.send({ embeds: [embed] }); count++; } catch (e) { } }
         return await interaction.editReply(`${count} 名に送信しました。`);
     }
-    // --- broadcast_modal の処理ブロック ---
-else if (interaction.isModalSubmit() && interaction.customId === 'broadcast_modal') {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     
-    const roleId = broadcastRoleMap.get(interaction.user.id);
-    broadcastRoleMap.delete(interaction.user.id);
+    else if (interaction.isModalSubmit() && interaction.customId === 'broadcast_modal') {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        
+        const roleId = broadcastRoleMap.get(interaction.user.id);
+        broadcastRoleMap.delete(interaction.user.id);
 
-    const msg = interaction.fields.getTextInputValue('msg');
-    const url = interaction.fields.getTextInputValue('file_url');
-    
-    // 送信メッセージの組み立て
-    const finalContent = url ? `${msg}\n\n🔗 ダウンロードはこちら:\n${url}` : msg;
-    
-    // --- 修正箇所: ここから ---
-// 1. ロールを確実に取得し直す
-const role = await interaction.guild.roles.fetch(roleId);
-if (!role) {
-    return await interaction.editReply('エラー: 指定されたロールが見つかりませんでした。');
-}
+        const msg = interaction.fields.getTextInputValue('msg');
+        const url = interaction.fields.getTextInputValue('file_url');
+        const finalContent = url ? `${msg}\n\n🔗 ダウンロードはこちら:\n${url}` : msg;
+        
+        const role = await interaction.guild.roles.fetch(roleId);
+        if (!role) {
+            return await interaction.editReply('エラー: 指定されたロールが見つかりませんでした。');
+        }
 
-// 2. ★これが重要★：サーバーの全メンバーを強制的に取得する
-const allMembers = await interaction.guild.members.fetch();
+        const allMembers = await interaction.guild.members.fetch();
+        const targetMembers = allMembers.filter(member => member.roles.cache.has(roleId));
 
-// 3. 全メンバーの中から、指定ロールを持っている人だけをフィルタリングする
-const targetMembers = allMembers.filter(member => member.roles.cache.has(roleId));
+        let successCount = 0;
+        let failCount = 0;
 
-let successCount = 0;
-let failCount = 0;
+        for (const [id, member] of targetMembers) {
+            try {
+                if (member.user.bot) continue;
+                await member.send({ content: finalContent });
+                successCount++;
+                await new Promise(r => setTimeout(r, 800)); 
+            } catch (e) {
+                failCount++;
+                console.log(`送信失敗: ${member.user.tag}`);
+            }
+        }
+    await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗: ${failCount}名`);
+} // ← ここで if (broadcast_modal) を閉じる（重要！）
 
-// 4. 取得したリストを使ってループ処理
-for (const [id, member] of targetMembers) {
-    try {
-        if (member.user.bot) continue; // ボット自身はスキップ
-        await member.send({ content: finalContent });
-        successCount++;
-        await new Promise(r => setTimeout(r, 800)); // 少し待機してレート制限を回避
-    } catch (e) {
-        failCount++;
-        console.log(`送信失敗: ${member.user.tag}`);
-    }
-}
-// --- 修正箇所: ここまで ---
+// --- ここからボタン・セレクトメニューの処理 ---
+if (interaction.isButton() || interaction.isStringSelectMenu()) {
+    // ... (以降の処理)
+} // ← ここで if (isButton...) を閉じる
+
     // --- ボタン・セレクトメニューの処理 ---
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
         const { customId } = interaction;
