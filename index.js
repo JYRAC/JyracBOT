@@ -176,11 +176,13 @@ client.on('interactionCreate', async interaction => {
             return await safeReply({ content: '完了しました！', flags: MessageFlags.Ephemeral });
         }
         if (commandName === 'broadcast') {
+    // 1. パスワード等の確認（これらは処理が速いので先にやる）
     if (options.getString('password') !== process.env.BROADCAST_PASSWORD) {
         return await interaction.reply({ content: 'パスワードが違います。', flags: MessageFlags.Ephemeral });
     }
+
     const role = options.getRole('target-role');
-    broadcastRoleMap.set(interaction.user.id, role.id); // ロールIDを保存
+    broadcastRoleMap.set(interaction.user.id, role.id);
 
     const modal = new ModalBuilder().setCustomId('broadcast_modal').setTitle('ロール宛 一斉送信');
     modal.addComponents(
@@ -202,57 +204,38 @@ client.on('interactionCreate', async interaction => {
     }
     // --- broadcast_modal の処理ブロック ---
 else if (interaction.isModalSubmit() && interaction.customId === 'broadcast_modal') {
-    // 1. まずdeferReplyを確実に実行して期限切れを防ぐ
-    try {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    } catch (err) {
-        console.error("deferReply失敗:", err);
-        return;
-    }
-
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    
     const roleId = broadcastRoleMap.get(interaction.user.id);
     broadcastRoleMap.delete(interaction.user.id);
 
-    // 2. guildが存在するか確認
-    if (!interaction.guild) {
-        return await interaction.editReply('エラー: サーバー内でのみ実行可能です。');
-    }
-
     const msg = interaction.fields.getTextInputValue('msg');
     const url = interaction.fields.getTextInputValue('file_url');
+    
+    // 送信メッセージの組み立て
     const finalContent = url ? `${msg}\n\n🔗 ダウンロードはこちら:\n${url}` : msg;
     
-    // 3. 安全にロール情報を取得
-    try {
-        const role = await interaction.guild.roles.fetch(roleId);
-        if (!role) {
-            return await interaction.editReply('エラー: ロールが見つかりませんでした。');
-        }
-        
-        const members = await interaction.guild.members.fetch();
-const filteredMembers = members.filter(member => member.roles.cache.has(roleId));
-        let successCount = 0;
-        let failCount = 0;
+    const role = interaction.guild.roles.cache.get(roleId);
+    if (!role) {
+        return await interaction.editReply('エラー: 指定されたロールが見つかりませんでした。');
+    }
 
-        for (const [id, member] of members) {
-            try {
-                // ボット自身のDMへの送信は除外する
-                if (member.user.bot) continue; 
-                
-                await member.send({ content: finalContent });
-                successCount++;
-                await new Promise(r => setTimeout(r, 800)); 
-            } catch (e) {
-                failCount++;
-                console.log(`送信失敗: ${member.user.tag}`);
-            }
+    const members = role.members;
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const [id, member] of members) {
+        try {
+            // URLをメッセージの一部として送信
+            await member.send({ content: finalContent });
+            successCount++;
+            await new Promise(r => setTimeout(r, 600)); 
+        } catch (e) {
+            failCount++;
         }
-        await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗: ${failCount}名`);
-    } catch (err) {
-        console.error("処理エラー:", err);
-        await interaction.editReply('エラーが発生しました。再度実行してください。');
-    　　}
-　　}
+    }
+    await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗(DM不可等): ${failCount}名`);
+}
     // --- ボタン・セレクトメニューの処理 ---
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
         const { customId } = interaction;
