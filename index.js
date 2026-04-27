@@ -16,8 +16,8 @@ const client = new Client({
 
 const ticketMessages = new Map();
 const activities = [
-    "JYRAC公式Instaはこちら！▶https://www.instagram.com/jyrac_official/",
-    "NSF公式Instaはこちら！▶https://www.instagram.com/2024nsfproject/",
+    "JYRAC公式Instはこちら！▶https://www.instagram.com/jyrac_official/",
+    "NSF公式Instはこちら！▶https://www.instagram.com/2024nsfproject/",
     "ボットに関するお問い合わせはDiscordID’pitayakun7’まで",
     "①広告募集中", "②広告募集中"
 ];
