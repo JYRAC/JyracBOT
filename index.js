@@ -89,10 +89,24 @@ client.on('interactionCreate', async interaction => {
         const { commandName, options } = interaction;
 
         if (commandName === 'receive-notifications') {
-            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        
+        // 登録状況を確認
+        const userDoc = await db.collection('subscribers').doc(interaction.user.id).get();
+        
+        if (userDoc.exists) {
+            // 既に登録されている場合
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('notify_remove').setLabel('解除する').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId('notify_cancel').setLabel('キャンセル').setStyle(ButtonStyle.Secondary)
+            );
+            return await interaction.editReply({ content: '既に通知登録されています。解除しますか？', components: [row] });
+        } else {
+            // 未登録の場合
             await db.collection('subscribers').doc(interaction.user.id).set({ registeredAt: new Date() });
             return await interaction.editReply('通知の登録が完了しました！');
         }
+   　 }
         if (commandName === 'notice') {
             if (options.getString('password') !== process.env.ADMIN_PASSWORD) return await interaction.reply({ content: 'パスワードが違います。', flags: MessageFlags.Ephemeral });
             const modal = new ModalBuilder().setCustomId('notice_modal').setTitle('お知らせ内容入力');
@@ -199,6 +213,18 @@ client.on('interactionCreate', async interaction => {
             await interaction.member.roles.add(customId.split('_')[2]);
             return await safeReply({ content: 'ロールを付与しました！', flags: MessageFlags.Ephemeral });
         }
+
+        if (interaction.isButton()) {
+    const { customId } = interaction;
+
+    // 通知解除の処理
+    if (customId === 'notify_remove') {
+        await db.collection('subscribers').doc(interaction.user.id).delete();
+        return await interaction.update({ content: '通知の登録を解除しました。', components: [] });
+    }
+    if (customId === 'notify_cancel') {
+        return await interaction.update({ content: 'キャンセルしました。', components: [] });
+    }
 
         if (customId.startsWith('tkt_')) {
             const [_, adminId, key] = customId.split('_');
