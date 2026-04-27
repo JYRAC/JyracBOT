@@ -204,32 +204,35 @@ client.on('interactionCreate', async interaction => {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     
     const roleId = broadcastRoleMap.get(interaction.user.id);
-    broadcastRoleMap.delete(interaction.user.id); // 不要になったので削除
+    broadcastRoleMap.delete(interaction.user.id);
 
-    const content = interaction.fields.getTextInputValue('msg');
-    const fileUrl = interaction.fields.getTextInputValue('file_url');
+    const msg = interaction.fields.getTextInputValue('msg');
+    const url = interaction.fields.getTextInputValue('file_url');
+    
+    // 送信メッセージの組み立て
+    const finalContent = url ? `${msg}\n\n🔗 ダウンロードはこちら:\n${url}` : msg;
     
     const role = interaction.guild.roles.cache.get(roleId);
+    if (!role) {
+        return await interaction.editReply('エラー: 指定されたロールが見つかりませんでした。');
+    }
+
     const members = role.members;
-    
     let successCount = 0;
     let failCount = 0;
 
     for (const [id, member] of members) {
         try {
-            const payload = { content: content };
-            if (fileUrl) payload.files = [fileUrl];
-            
-            await member.send(payload);
+            // URLをメッセージの一部として送信
+            await member.send({ content: finalContent });
             successCount++;
-            await new Promise(r => setTimeout(r, 600)); // 0.6秒間隔で送信
+            await new Promise(r => setTimeout(r, 600)); 
         } catch (e) {
             failCount++;
         }
     }
     await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗(DM不可等): ${failCount}名`);
 }
-
     // --- ボタン・セレクトメニューの処理 ---
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
         const { customId } = interaction;
