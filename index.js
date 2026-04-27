@@ -215,27 +215,35 @@ else if (interaction.isModalSubmit() && interaction.customId === 'broadcast_moda
     // 送信メッセージの組み立て
     const finalContent = url ? `${msg}\n\n🔗 ダウンロードはこちら:\n${url}` : msg;
     
-    const role = interaction.guild.roles.cache.get(roleId);
-    if (!role) {
-        return await interaction.editReply('エラー: 指定されたロールが見つかりませんでした。');
-    }
-
-    const members = role.members;
-    let successCount = 0;
-    let failCount = 0;
-
-    for (const [id, member] of members) {
-        try {
-            // URLをメッセージの一部として送信
-            await member.send({ content: finalContent });
-            successCount++;
-            await new Promise(r => setTimeout(r, 600)); 
-        } catch (e) {
-            failCount++;
-        }
-    }
-    await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗(DM不可等): ${failCount}名`);
+    // --- 修正箇所: ここから ---
+// 1. ロールを確実に取得し直す
+const role = await interaction.guild.roles.fetch(roleId);
+if (!role) {
+    return await interaction.editReply('エラー: 指定されたロールが見つかりませんでした。');
 }
+
+// 2. ★これが重要★：サーバーの全メンバーを強制的に取得する
+const allMembers = await interaction.guild.members.fetch();
+
+// 3. 全メンバーの中から、指定ロールを持っている人だけをフィルタリングする
+const targetMembers = allMembers.filter(member => member.roles.cache.has(roleId));
+
+let successCount = 0;
+let failCount = 0;
+
+// 4. 取得したリストを使ってループ処理
+for (const [id, member] of targetMembers) {
+    try {
+        if (member.user.bot) continue; // ボット自身はスキップ
+        await member.send({ content: finalContent });
+        successCount++;
+        await new Promise(r => setTimeout(r, 800)); // 少し待機してレート制限を回避
+    } catch (e) {
+        failCount++;
+        console.log(`送信失敗: ${member.user.tag}`);
+    }
+}
+// --- 修正箇所: ここまで ---
     // --- ボタン・セレクトメニューの処理 ---
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
         const { customId } = interaction;
