@@ -200,38 +200,58 @@ client.on('interactionCreate', async interaction => {
         for (const doc of subs.docs) { try { const user = await client.users.fetch(doc.id); await user.send({ embeds: [embed] }); count++; } catch (e) { } }
         return await interaction.editReply(`${count} 名に送信しました。`);
     }
-    // --- モーダル送信処理の修正（broadcast_modal） ---
-    else if (interaction.isModalSubmit() && interaction.customId === 'broadcast_modal') {
+    // --- broadcast_modal の処理ブロック ---
+else if (interaction.isModalSubmit() && interaction.customId === 'broadcast_modal') {
+    // 1. まずdeferReplyを確実に実行して期限切れを防ぐ
+    try {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        
-        const roleId = broadcastRoleMap.get(interaction.user.id);
-        broadcastRoleMap.delete(interaction.user.id);
+    } catch (err) {
+        console.error("deferReply失敗:", err);
+        return;
+    }
 
-        const msg = interaction.fields.getTextInputValue('msg');
-        const url = interaction.fields.getTextInputValue('file_url');
-        const finalContent = url ? `${msg}\n\n🔗 ダウンロードはこちら:\n${url}` : msg;
-        
+    const roleId = broadcastRoleMap.get(interaction.user.id);
+    broadcastRoleMap.delete(interaction.user.id);
+
+    // 2. guildが存在するか確認
+    if (!interaction.guild) {
+        return await interaction.editReply('エラー: サーバー内でのみ実行可能です。');
+    }
+
+    const msg = interaction.fields.getTextInputValue('msg');
+    const url = interaction.fields.getTextInputValue('file_url');
+    const finalContent = url ? `${msg}\n\n🔗 ダウンロードはこちら:\n${url}` : msg;
+    
+    // 3. 安全にロール情報を取得
+    try {
         const role = await interaction.guild.roles.fetch(roleId);
         if (!role) {
-            return await interaction.editReply('エラー: 指定されたロールが見つかりませんでした。');
+            return await interaction.editReply('エラー: ロールが見つかりませんでした。');
         }
+        
         const members = await role.members.fetch();
-
         let successCount = 0;
         let failCount = 0;
 
         for (const [id, member] of members) {
             try {
+                // ボット自身のDMへの送信は除外する
+                if (member.user.bot) continue; 
+                
                 await member.send({ content: finalContent });
                 successCount++;
                 await new Promise(r => setTimeout(r, 800)); 
             } catch (e) {
                 failCount++;
-                console.log(`送信失敗: ${member.user.tag} - エラー内容: ${e.message}`);
+                console.log(`送信失敗: ${member.user.tag}`);
             }
         }
         await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗: ${failCount}名`);
-    }
+    } catch (err) {
+        console.error("処理エラー:", err);
+        await interaction.editReply('エラーが発生しました。再度実行してください。');
+    　　}
+　　}
     // --- ボタン・セレクトメニューの処理 ---
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
         const { customId } = interaction;
