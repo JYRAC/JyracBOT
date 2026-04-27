@@ -70,8 +70,17 @@ client.on('interactionCreate', async interaction => {
             try { await interaction.showModal(modal); } catch (e) { console.error(e); }
         }
         if (commandName === 'help') {
-            const embed = new EmbedBuilder().setTitle('📜 コマンドヘルプ').setDescription('詳細を確認したいコマンドを選択してください。').setColor(0x00AE86);
-            const select = new StringSelectMenuBuilder().setCustomId('help_select').setPlaceholder('選択...').addOptions([{ label: '/verify', value: 'help_verify' }, { label: '/ticket', value: 'help_ticket' }, { label: '/role-confirmation', value: 'help_role' }, { label: '/delete', value: 'help_delete' }]);
+            const embed = new EmbedBuilder().setTitle('📜 コマンド一覧').setDescription('詳細を確認したいコマンドを選択してください。').setColor(0x00AE86);
+            const select = new StringSelectMenuBuilder().setCustomId('help_select').setPlaceholder('コマンドを選択...').addOptions([
+                { label: '/verify', value: 'help_verify' },
+                { label: '/ticket', value: 'help_ticket' },
+                { label: '/role-confirmation', value: 'help_role' },
+                { label: '/delete', value: 'help_delete' },
+                { label: '/give-role', value: 'help_giverole' },
+                { label: '/remove-role', value: 'help_removerole' },
+                { label: '/notice', value: 'help_notice' },
+                { label: '/receive-notifications', value: 'help_notify' }
+            ]);
             return await safeReply({ embeds: [embed], components: [new ActionRowBuilder().addComponents(select)], flags: MessageFlags.Ephemeral });
         }
         if (commandName === 'delete') {
@@ -86,6 +95,24 @@ client.on('interactionCreate', async interaction => {
             const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`v_role_${role.id}`).setLabel('✅ 認証').setStyle(ButtonStyle.Success));
             return await safeReply({ embeds: [embed], components: [row] });
         }
+        if (customId === 'help_select') {
+            const helpData = {
+                help_verify: { title: '/verify', desc: '【内容】認証パネルを作成します。\n【詳細】ボタンを押したユーザーに指定したロールを付与します。' },
+                help_ticket: { title: '/ticket', desc: '【内容】チケットパネルを作成します。\n【詳細】問い合わせチャンネルを生成し、管理者へ通知します。' },
+                help_role: { title: '/role-confirmation', desc: '【内容】ロール確認\n【詳細】指定した対象の現在のロール一覧を表示します。' },
+                help_delete: { title: '/delete', desc: '【内容】メッセージ一括削除\n【詳細】指定した件数(1-100)のメッセージを削除します。' },
+                help_giverole: { title: '/give-role', desc: '【内容】ロール付与\n【詳細】指定したユーザーに特定のロールを付与します。' },
+                help_removerole: { title: '/remove-role', desc: '【内容】ロール剥奪\n【詳細】指定したユーザーから特定のロールを剥奪します。' },
+                help_notice: { title: '/notice', desc: '【内容】お知らせ送信\n【詳細】パスワード認証後、通知登録者全員に一斉DMを送信します。' },
+                help_notify: { title: '/receive-notifications', desc: '【内容】通知登録\n【詳細】お知らせを受け取るためのリストに自身を登録します。' }
+            };
+            
+            const selected = interaction.values[0];
+            const data = helpData[selected];
+            await interaction.update({ 
+                embeds: [new EmbedBuilder().setTitle(`📖 ${data.title}`).setDescription(data.desc).setColor(0x00AE86)], 
+                components: [interaction.message.components[0]] 
+            });
         if (commandName === 'ticket') {
             const adminRole = options.getRole('admin-role');
             const key = `msg_${Date.now()}`;
@@ -129,17 +156,41 @@ client.on('interactionCreate', async interaction => {
         }
         if (customId.startsWith('tkt_')) {
             const [_, adminId, key] = customId.split('_');
-            const ch = await interaction.guild.channels.create({ name: `🎫-${interaction.user.username}`, type: ChannelType.GuildText });
-            await ch.send({ content: `${interaction.user} ${ticketMessages.get(key) || ''} <@&${adminId}>`, components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_close_c').setLabel('閉じる').setStyle(ButtonStyle.Danger))] });
-            return await safeReply({ content: `チケットを作成しました: ${ch}`, flags: MessageFlags.Ephemeral });
+            
+            // ★ここを修正：メッセージがない場合はデフォルト文を指定する
+            const customMessage = ticketMessages.get(key) || 'お問い合わせありがとうございます。\n以下のロールを持っている担当者が来るまで少々お待ちください。\n by 作成者';
+            
+            const ch = await interaction.guild.channels.create({ 
+                name: `🎫-${interaction.user.username}`, 
+                type: ChannelType.GuildText 
+            });
+
+            // チャンネル内にメッセージを送信
+            await ch.send({ 
+                content: `${interaction.user} ${customMessage} <@&${adminId}>`, 
+                components: [
+                    new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('t_close_c').setLabel('閉じる').setStyle(ButtonStyle.Danger)
+                    )
+                ] 
+            });
+
+            return await safeReply({ 
+                content: `チケットを作成しました: ${ch}`, 
+                flags: MessageFlags.Ephemeral 
+            });
         }
         if (customId === 't_close_c') {
-            await safeReply({ components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_yes').setLabel('本当に削除する').setStyle(ButtonStyle.Danger))], flags: MessageFlags.Ephemeral });
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('t_yes').setLabel('削除').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId('t_no').setLabel('キャンセル').setStyle(ButtonStyle.Secondary)
+            );
+            return await interaction.reply({ content: '本当にチケットを削除しますか？', components: [row], flags: MessageFlags.Ephemeral });
         }
-        if (customId === 't_yes') await interaction.channel.delete();
-        if (customId === 'help_select') {
-            const h = { help_verify: '【ロール付与】\n認証パネルを作成します。', help_ticket: '【チケット作成】\n問い合わせ用パネルを作成します。', help_role: '【ロール確認】\n指定したユーザーの現在のロールを表示します。', help_delete: '【一括削除】\n指定した件数のメッセージを削除します。' };
-            await interaction.update({ embeds: [new EmbedBuilder().setTitle(interaction.values[0]).setDescription(h[interaction.values[0]]).setColor(0x00AE86)], components: [interaction.message.components[0]] });
+
+        // 削除確認で「キャンセル」が押された場合
+        if (customId === 't_no') {
+            return await interaction.update({ content: '削除をキャンセルしました。', components: [] });
         }
     }
 });
