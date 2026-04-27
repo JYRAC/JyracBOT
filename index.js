@@ -10,12 +10,13 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
+const broadcastRoleMap = new Map();
+const ticketMessages = new Map();
+
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages]
 });
 
-const broadcastRoleMap = new Map();
-const ticketMessages = new Map();
 const activities = [
     "JYRAC公式Instはこちら！▶https://www.instagram.com/jyrac_official/",
     "NSF公式Instはこちら！▶https://www.instagram.com/2024nsfproject/",
