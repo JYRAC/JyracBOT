@@ -214,10 +214,6 @@ client.on('interactionCreate', async interaction => {
             return await safeReply({ content: 'ロールを付与しました！', flags: MessageFlags.Ephemeral });
         }
 
-        if (interaction.isButton()) {
-    const { customId } = interaction;
-
-    // 通知解除の処理
     if (customId === 'notify_remove') {
         await db.collection('subscribers').doc(interaction.user.id).delete();
         return await interaction.update({ content: '通知の登録を解除しました。', components: [] });
