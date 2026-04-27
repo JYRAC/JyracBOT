@@ -229,7 +229,8 @@ else if (interaction.isModalSubmit() && interaction.customId === 'broadcast_moda
             return await interaction.editReply('エラー: ロールが見つかりませんでした。');
         }
         
-        const members = await role.members.fetch();
+        const members = await interaction.guild.members.fetch();
+const filteredMembers = members.filter(member => member.roles.cache.has(roleId));
         let successCount = 0;
         let failCount = 0;
 
