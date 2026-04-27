@@ -60,6 +60,12 @@ const commands = [
     new SlashCommandBuilder().setName('receive-notifications').setDescription('重要なお知らせの通知登録を行う'),
     new SlashCommandBuilder().setName('notice').setDescription('お知らせを送信(管理者専用)')
     .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+
+    new SlashCommandBuilder().setName('broadcast')
+    .setDescription('指定ロールの全メンバーにDMで一斉送信(管理者専用)')
+    .addRoleOption(o => o.setName('target-role').setDescription('送信対象のロール').setRequired(true))
+    .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles)
 ].map(c => c.toJSON());
 
@@ -167,6 +173,20 @@ client.on('interactionCreate', async interaction => {
             commandName === 'give-role' ? await member.roles.add(role) : await member.roles.remove(role);
             return await safeReply({ content: '完了しました！', flags: MessageFlags.Ephemeral });
         }
+        if (commandName === 'broadcast') {
+    if (options.getString('password') !== process.env.BROADCAST_PASSWORD) {
+        return await interaction.reply({ content: 'パスワードが違います。', flags: MessageFlags.Ephemeral });
+    }
+    const role = options.getRole('target-role');
+    broadcastRoleMap.set(interaction.user.id, role.id); // ロールIDを保存
+
+    const modal = new ModalBuilder().setCustomId('broadcast_modal').setTitle('ロール宛 一斉送信');
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('msg').setLabel('送信メッセージ').setStyle(TextInputStyle.Paragraph).setRequired(true)),
+        new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('file_url').setLabel('画像/ファイルURL (任意)').setStyle(TextInputStyle.Short).setRequired(false))
+    　　);
+   　　 await interaction.showModal(modal);
+　　　 }
     }
 
     // --- モーダル送信の処理 ---
@@ -178,6 +198,35 @@ client.on('interactionCreate', async interaction => {
         for (const doc of subs.docs) { try { const user = await client.users.fetch(doc.id); await user.send({ embeds: [embed] }); count++; } catch (e) { } }
         return await interaction.editReply(`${count} 名に送信しました。`);
     }
+    else if (interaction.isModalSubmit() && interaction.customId === 'broadcast_modal') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    
+    const roleId = broadcastRoleMap.get(interaction.user.id);
+    broadcastRoleMap.delete(interaction.user.id); // 不要になったので削除
+
+    const content = interaction.fields.getTextInputValue('msg');
+    const fileUrl = interaction.fields.getTextInputValue('file_url');
+    
+    const role = interaction.guild.roles.cache.get(roleId);
+    const members = role.members;
+    
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const [id, member] of members) {
+        try {
+            const payload = { content: content };
+            if (fileUrl) payload.files = [fileUrl];
+            
+            await member.send(payload);
+            successCount++;
+            await new Promise(r => setTimeout(r, 600)); // 0.6秒間隔で送信
+        } catch (e) {
+            failCount++;
+        }
+    }
+    await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗(DM不可等): ${failCount}名`);
+}
 
     // --- ボタン・セレクトメニューの処理 ---
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
