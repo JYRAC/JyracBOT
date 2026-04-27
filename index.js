@@ -200,56 +200,38 @@ client.on('interactionCreate', async interaction => {
         for (const doc of subs.docs) { try { const user = await client.users.fetch(doc.id); await user.send({ embeds: [embed] }); count++; } catch (e) { } }
         return await interaction.editReply(`${count} 名に送信しました。`);
     }
+    // --- モーダル送信処理の修正（broadcast_modal） ---
     else if (interaction.isModalSubmit() && interaction.customId === 'broadcast_modal') {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    
-    const roleId = broadcastRoleMap.get(interaction.user.id);
-    broadcastRoleMap.delete(interaction.user.id);
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        
+        const roleId = broadcastRoleMap.get(interaction.user.id);
+        broadcastRoleMap.delete(interaction.user.id);
 
-    const msg = interaction.fields.getTextInputValue('msg');
-    const url = interaction.fields.getTextInputValue('file_url');
-    const finalContent = url ? `${msg}\n\n🔗 ダウンロードはこちら:\n${url}` : msg;
-    
-    // --- ここに記述します ---
-    const role = await interaction.guild.roles.fetch(roleId);
-    if (!role) {
-        return await interaction.editReply('エラー: 指定されたロールが見つかりませんでした。');
-    }
-    const members = await role.members.fetch(); // これで最新のメンバーリストを取得
-    // -----------------------
-
-    let successCount = 0;
-    let failCount = 0;
-
-    for (const [id, member] of members) {
-        try {
-            await member.send({ content: finalContent });
-            successCount++;
-            await new Promise(r => setTimeout(r, 800)); 
-        } catch (e) {
-            failCount++;
-            console.log(`送信失敗: ${member.user.tag} - エラー内容: ${e.message}`);
+        const msg = interaction.fields.getTextInputValue('msg');
+        const url = interaction.fields.getTextInputValue('file_url');
+        const finalContent = url ? `${msg}\n\n🔗 ダウンロードはこちら:\n${url}` : msg;
+        
+        const role = await interaction.guild.roles.fetch(roleId);
+        if (!role) {
+            return await interaction.editReply('エラー: 指定されたロールが見つかりませんでした。');
         }
-    }
-    await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗: ${failCount}名`);
-}
+        const members = await role.members.fetch();
 
-    const members = role.members;
-    let successCount = 0;
-    let failCount = 0;
+        let successCount = 0;
+        let failCount = 0;
 
-    for (const [id, member] of members) {
-        try {
-            // URLをメッセージの一部として送信
-            await member.send({ content: finalContent });
-            successCount++;
-            await new Promise(r => setTimeout(r, 600)); 
-        } catch (e) {
-            failCount++;
+        for (const [id, member] of members) {
+            try {
+                await member.send({ content: finalContent });
+                successCount++;
+                await new Promise(r => setTimeout(r, 800)); 
+            } catch (e) {
+                failCount++;
+                console.log(`送信失敗: ${member.user.tag} - エラー内容: ${e.message}`);
+            }
         }
+        await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗: ${failCount}名`);
     }
-    await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗(DM不可等): ${failCount}名`);
-}
     // --- ボタン・セレクトメニューの処理 ---
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
         const { customId } = interaction;
