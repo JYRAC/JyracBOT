@@ -208,14 +208,31 @@ client.on('interactionCreate', async interaction => {
 
     const msg = interaction.fields.getTextInputValue('msg');
     const url = interaction.fields.getTextInputValue('file_url');
-    
-    // 送信メッセージの組み立て
     const finalContent = url ? `${msg}\n\n🔗 ダウンロードはこちら:\n${url}` : msg;
     
-    const role = interaction.guild.roles.cache.get(roleId);
+    // --- ここに記述します ---
+    const role = await interaction.guild.roles.fetch(roleId);
     if (!role) {
         return await interaction.editReply('エラー: 指定されたロールが見つかりませんでした。');
     }
+    const members = await role.members.fetch(); // これで最新のメンバーリストを取得
+    // -----------------------
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const [id, member] of members) {
+        try {
+            await member.send({ content: finalContent });
+            successCount++;
+            await new Promise(r => setTimeout(r, 800)); 
+        } catch (e) {
+            failCount++;
+            console.log(`送信失敗: ${member.user.tag} - エラー内容: ${e.message}`);
+        }
+    }
+    await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗: ${failCount}名`);
+}
 
     const members = role.members;
     let successCount = 0;
