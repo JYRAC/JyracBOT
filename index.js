@@ -37,38 +37,38 @@ const commands = [
     .addStringOption(o => o.setName('title').setDescription('タイトル'))
     .addStringOption(o => o.setName('description').setDescription('説明文'))
     .addStringOption(o => o.setName('panel-desc').setDescription('チケット作成時メッセージ'))
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+   .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageNicknames),
     
     new SlashCommandBuilder().setName('role-confirmation').setDescription('指定ユーザーのロールを確認')
     .addUserOption(o => o.setName('target').setDescription('確認対象').setRequired(true))
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers),
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageNicknames),
     
     new SlashCommandBuilder().setName('delete').setDescription('メッセージを一括削除')
     .addIntegerOption(o => o.setName('amount').setDescription('件数(1-100)').setRequired(true))
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageNicknames),
     
     new SlashCommandBuilder().setName('help').setDescription('コマンド一覧と詳細を表示'),
     
     new SlashCommandBuilder().setName('give-role').setDescription('ロールを付与')
     .addUserOption(o => o.setName('target').setDescription('対象').setRequired(true))
     .addRoleOption(o => o.setName('role').setDescription('ロール').setRequired(true))
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageNicknames),
     
     new SlashCommandBuilder().setName('remove-role').setDescription('ロールを剥奪')
     .addUserOption(o => o.setName('target').setDescription('対象').setRequired(true))
     .addRoleOption(o => o.setName('role').setDescription('ロール').setRequired(true))
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageNicknames),
     
     new SlashCommandBuilder().setName('receive-notifications').setDescription('重要なお知らせの通知登録を行う'),
     new SlashCommandBuilder().setName('notice').setDescription('お知らせを送信(管理者専用)')
     .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
-
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageNicknames),
+    
     new SlashCommandBuilder().setName('broadcast')
     .setDescription('指定ロールの全メンバーにDMで一斉送信(管理者専用)')
     .addRoleOption(o => o.setName('target-role').setDescription('送信対象のロール').setRequired(true))
     .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles)
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageNicknames)
 ].map(c => c.toJSON());
 
 client.once('clientReady', async () => { // clientReady ではなく ready が一般的
