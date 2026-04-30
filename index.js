@@ -58,7 +58,10 @@ const commands = [
     new SlashCommandBuilder().setName('broadcast').setDescription('指定ロールの全メンバーにDMで一斉送信(管理者専用)')
         .addRoleOption(o => o.setName('target-role').setDescription('送信対象のロール').setRequired(true))
         .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageNicknames)
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageNicknames),
+
+    new SlashCommandBuilder().setName('request')
+        .setDescription('新規コマンドの作成依頼を送ります')
 ].map(c => c.toJSON());
 
 client.once('ready', async () => {
@@ -161,6 +164,15 @@ client.on('interactionCreate', async interaction => {
             );
             return await interaction.showModal(modal);
         }
+        if (commandName === 'request') {
+            const modal = new ModalBuilder().setCustomId('request_modal').setTitle('新規コマンド作成依頼');
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('req_name').setLabel('記入者名').setStyle(TextInputStyle.Short).setRequired(true)),
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('req_cmd').setLabel('新規コマンド名').setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('/example')),
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('req_desc').setLabel('コマンドの説明').setStyle(TextInputStyle.Paragraph).setRequired(true))
+            );
+            return await interaction.showModal(modal);
+        }
     }
 
     if (interaction.isModalSubmit()) {
@@ -171,7 +183,9 @@ client.on('interactionCreate', async interaction => {
             let count = 0;
             for (const doc of subs.docs) { try { const user = await client.users.fetch(doc.id); await user.send({ embeds: [embed] }); count++; } catch (e) { } }
             return await interaction.editReply(`${count} 名に送信しました。`);
-        } else if (interaction.customId === 'broadcast_modal') {
+            }
+            
+        else if (interaction.customId === 'broadcast_modal') {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const roleId = broadcastRoleMap.get(interaction.user.id);
             broadcastRoleMap.delete(interaction.user.id);
@@ -192,8 +206,37 @@ client.on('interactionCreate', async interaction => {
                 } catch (e) { failCount++; }
             }
             await interaction.editReply(`送信完了！\n成功: ${successCount}名\n失敗: ${failCount}名`);
+            }
+        else if (interaction.customId === 'request_modal') {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+            const name = interaction.fields.getTextInputValue('req_name');
+            const cmd = interaction.fields.getTextInputValue('req_cmd');
+            const desc = interaction.fields.getTextInputValue('req_desc');
+
+            const embed = new EmbedBuilder()
+                .setTitle('📩 新規コマンド作成依頼受領')
+                .addFields(
+                    { name: '👤 依頼者', value: name, inline: true },
+                    { name: '⌨️ コマンド名', value: `\`${cmd}\``, inline: true },
+                    { name: '📝 詳細説明', value: desc }
+                )
+                .setColor(0xFFA500)
+                .setTimestamp()
+                .setFooter({ text: `送信者ID: ${interaction.user.id}` });
+
+            // 指定した管理者のIDにDMで通知を送る
+            const adminId = 'YOUR_USER_ID'; // ★ここを自分のIDに書き換えてください
+            try {
+                const adminUser = await client.users.fetch(adminId);
+                await adminUser.send({ embeds: [embed] });
+                await interaction.editReply('依頼を送信しました。管理者の確認をお待ちください。');
+            } catch (e) {
+                console.error(e);
+                await interaction.editReply('依頼の送信中にエラーが発生しました。');
+                }
+            }
         }
-    }
 
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
         const { customId } = interaction;
