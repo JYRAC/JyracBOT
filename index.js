@@ -225,17 +225,23 @@ client.on('interactionCreate', async interaction => {
                 .setTimestamp()
                 .setFooter({ text: `送信者ID: ${interaction.user.id}` });
 
-            // 指定した管理者のIDにDMで通知を送る
-            const adminId = 'YOUR_USER_ID'; // ★ここを自分のIDに書き換えてください
+            // ★ 環境変数からIDを読み込むように変更
+            const adminId = process.env.ADMIN_USER_ID; 
+
+            if (!adminId) {
+                console.error("環境変数 'ADMIN_USER_ID' が設定されていません。");
+                return await interaction.editReply('システムエラー：管理者の設定が見つかりません。');
+            }
+
             try {
                 const adminUser = await client.users.fetch(adminId);
                 await adminUser.send({ embeds: [embed] });
                 await interaction.editReply('依頼を送信しました。管理者の確認をお待ちください。');
             } catch (e) {
                 console.error(e);
-                await interaction.editReply('依頼の送信中にエラーが発生しました。');
-                }
+                await interaction.editReply('エラー：管理者への通知に失敗しました。');
             }
+        　}
         }
 
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
