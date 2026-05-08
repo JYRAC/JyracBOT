@@ -313,7 +313,7 @@ client.on('interactionCreate', async interaction => {
         if (customId.startsWith('tkt_')) {
             const [_, aid, key] = customId.split('_');
             const ch = await interaction.guild.channels.create({ name: `🎫-${interaction.user.username}`, type: ChannelType.GuildText });
-            await ch.send({ content: `${interaction.user} ${ticketMessages.get(key) || '受付中'} <@&${aid}>`, components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_close_c').setLabel('閉じる').setStyle(ButtonStyle.Danger))] });
+            await ch.send({ content: `${interaction.user} ${ticketMessages.get(key) || '様、発行ありがとうございます。/n以下のロールの持ち主が来るまでお待ち下さい。'} <@&${aid}>`, components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_close_c').setLabel('チケットを閉じる').setStyle(ButtonStyle.Danger))] });
             
             const logEmbed = new EmbedBuilder()
                 .setTitle('送信ログ')
@@ -324,7 +324,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (customId === 't_close_c') {
-            const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_yes').setLabel('削除').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId('t_no').setLabel('中止').setStyle(ButtonStyle.Secondary));
+            const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_yes').setLabel('削除').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId('t_no').setLabel('キャンセル').setStyle(ButtonStyle.Secondary));
             return await interaction.reply({ content: 'チケットを削除しますか？', components: [row], flags: MessageFlags.Ephemeral });
         }
 
