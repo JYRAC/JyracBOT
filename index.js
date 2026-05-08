@@ -88,7 +88,7 @@ const commands = [
     new SlashCommandBuilder().setName('request').setDescription('新規コマンドの作成依頼を送る'),
     new SlashCommandBuilder().setName('log').setDescription('ログの送信先チャンネルを設定する')
         .addChannelOption(o => o.setName('channel').setDescription('ログチャンネル').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers)
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
 ].map(c => c.toJSON());
 
 // --- Bot Ready ---
@@ -103,7 +103,7 @@ client.once('ready', async () => {
     }, 15000);
 });
 
-// --- Express (Keep Alive) ---
+// --- Express ---
 const app = express();
 app.get('/', (req, res) => res.send('Bot is Active!'));
 app.listen(3000);
@@ -117,30 +117,16 @@ client.on('interactionCreate', async interaction => {
         const { commandName, options } = interaction;
 
         if (commandName === 'log') {
-            // 1. まず保留する（3秒ルール回避）
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-            
             const channel = options.getChannel('channel');
-            
             try {
-                // 2. Firebaseに保存
-                await db.collection('log_settings').doc(interaction.guild.id).set({ 
-                    channelId: channel.id,
-                    guildName: interaction.guild.name
-                });
-                
-                // 3. 重要：deferReplyした後は「reply」ではなく「editReply」を使う
-                return await interaction.editReply({ 
-                    content: `✅ ログ送信先を ${channel} に設定しました。` 
-                });
-            } catch (error) {
-                console.error('Log command error:', error);
-                // エラー時も editReply を使う
-                return await interaction.editReply({ 
-                    content: '設定の保存中にエラーが発生しました。' 
-                });
+                await db.collection('log_settings').doc(interaction.guild.id).set({ channelId: channel.id, guildName: interaction.guild.name });
+                return await interaction.editReply({ content: `✅ ログ送信先を ${channel} に設定しました。` });
+            } catch (e) {
+                return await interaction.editReply({ content: '設定の保存に失敗しました。' });
             }
         }
+
         if (commandName === 'request') {
             const modal = new ModalBuilder().setCustomId('request_modal').setTitle('新規コマンド作成依頼');
             modal.addComponents(
@@ -301,8 +287,13 @@ client.on('interactionCreate', async interaction => {
 
         if (customId.startsWith('bulk_delete_yes_')) {
             const amount = parseInt(customId.split('_')[3]);
+            const channelName = interaction.channel.name;
             await interaction.channel.bulkDelete(amount, true);
-            const logEmbed = new EmbedBuilder().setTitle('🗑️ 削除ログ').setDescription(`${interaction.user} が ${interaction.channel} で ${amount}件のメッセージを削除しました`).setColor(0xE74C3C).setTimestamp();
+            
+            const logEmbed = new EmbedBuilder()
+                .setTitle('送信ログ')
+                .setDescription(`/deleteのボタンが使用されました。\n${amount}件のメッセージが削除されました。\nチャンネル名: ${channelName}\n消したユーザー名: ${interaction.user}`)
+                .setColor(0xE74C3C).setTimestamp();
             await sendLog(interaction.guild, logEmbed);
             return await interaction.update({ content: '削除完了', embeds: [], components: [] });
         }
@@ -310,7 +301,11 @@ client.on('interactionCreate', async interaction => {
         if (customId.startsWith('v_role_')) {
             const rid = customId.split('_')[2];
             await interaction.member.roles.add(rid);
-            const logEmbed = new EmbedBuilder().setTitle('✅ 認証ログ').setDescription(`${interaction.user} が認証し <@&${rid}> を取得しました`).setColor(0x2ECC71).setTimestamp();
+            
+            const logEmbed = new EmbedBuilder()
+                .setTitle('送信ログ')
+                .setDescription(`/verifyのボタンが使用されました。\n使用者を表示: ${interaction.user}\nロールをメンション: <@&${rid}>`)
+                .setColor(0x2ECC71).setTimestamp();
             await sendLog(interaction.guild, logEmbed);
             return await safeReply({ content: 'ロール付与完了', flags: MessageFlags.Ephemeral });
         }
@@ -319,7 +314,11 @@ client.on('interactionCreate', async interaction => {
             const [_, aid, key] = customId.split('_');
             const ch = await interaction.guild.channels.create({ name: `🎫-${interaction.user.username}`, type: ChannelType.GuildText });
             await ch.send({ content: `${interaction.user} ${ticketMessages.get(key) || '受付中'} <@&${aid}>`, components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_close_c').setLabel('閉じる').setStyle(ButtonStyle.Danger))] });
-            const logEmbed = new EmbedBuilder().setTitle('🎫 チケット作成').setDescription(`${interaction.user} がチケット ${ch} を作成しました`).setColor(0x3498DB).setTimestamp();
+            
+            const logEmbed = new EmbedBuilder()
+                .setTitle('送信ログ')
+                .setDescription(`/ticketのボタンが使用されました。\nチャンネルを表示: ${ch}\n使用者を表示: ${interaction.user}\nロールをメンション: <@&${aid}>`)
+                .setColor(0x3498DB).setTimestamp();
             await sendLog(interaction.guild, logEmbed);
             return await safeReply({ content: `作成完了: ${ch}`, flags: MessageFlags.Ephemeral });
         }
@@ -330,9 +329,14 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (customId === 't_yes') {
-            const logEmbed = new EmbedBuilder().setTitle('🗑️ チケット閉鎖').setDescription(`${interaction.user} がチケット \`${interaction.channel.name}\` を削除しました`).setColor(0xE74C3C).setTimestamp();
+            const channelName = interaction.channel.name;
+            const logEmbed = new EmbedBuilder()
+                .setTitle('送信ログ')
+                .setDescription(`/ticket(閉じる)のボタンが使用されました。\nチケットチャンネルが削除されました。\nチャンネル名: ${channelName}\n消したユーザー名: ${interaction.user}`)
+                .setColor(0xE74C3C).setTimestamp();
             await sendLog(interaction.guild, logEmbed);
-            await interaction.channel.delete();
+            // ログ送信完了を待つため少し遅らせて削除
+            setTimeout(() => interaction.channel.delete().catch(() => {}), 1000);
         }
 
         if (customId === 'bulk_delete_no' || customId === 'notify_cancel' || customId === 't_no') {
