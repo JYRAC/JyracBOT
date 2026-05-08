@@ -88,7 +88,7 @@ const commands = [
     new SlashCommandBuilder().setName('request').setDescription('新規コマンドの作成依頼を送る'),
     new SlashCommandBuilder().setName('log').setDescription('ログの送信先チャンネルを設定する')
         .addChannelOption(o => o.setName('channel').setDescription('ログチャンネル').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers)
 ].map(c => c.toJSON());
 
 // --- Bot Ready ---
