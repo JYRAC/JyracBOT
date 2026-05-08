@@ -120,11 +120,36 @@ client.on(Events.InteractionCreate, async interaction => {
         if (commandName === 'log') {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const channel = options.getChannel('channel');
+
             try {
-                await db.collection('log_settings').doc(interaction.guild.id).set({ channelId: channel.id, guildName: interaction.guild.name });
-                return await interaction.editReply({ content: `✅ ログ送信先を ${channel} に設定しました。` });
+                // 現在の設定を取得（上書き前の確認用）
+                const logDoc = await db.collection('log_settings').doc(interaction.guild.id).get();
+                const oldChannelId = logDoc.exists ? logDoc.data().channelId : null;
+
+                if (channel) {
+                    // 新しい設定を保存（これで以前のAチャンネルの情報は消え、Bに上書きされます）
+                    await db.collection('log_settings').doc(interaction.guild.id).set({ 
+                        channelId: channel.id, 
+                        guildName: interaction.guild.name 
+                    });
+
+                    let message = `✅ ログ送信先を ${channel} に設定しました。`;
+                    if (oldChannelId && oldChannelId !== channel.id) {
+                        message = `🔄 以前の設定を解除し、ログ送信先を ${channel} に変更しました。`;
+                    }
+                    
+                    return await interaction.editReply({ content: message });
+                } else {
+                    // 解除処理
+                    if (!logDoc.exists) {
+                        return await interaction.editReply({ content: '❌ 現在、ログ設定は登録されていません。' });
+                    }
+                    await db.collection('log_settings').doc(interaction.guild.id).delete();
+                    return await interaction.editReply({ content: '🗑️ ログの設定を解除しました。' });
+                }
             } catch (e) {
-                return await interaction.editReply({ content: '設定の保存に失敗しました。' });
+                console.error(e);
+                return await interaction.editReply({ content: '設定の更新中にエラーが発生しました。' });
             }
         }
 
