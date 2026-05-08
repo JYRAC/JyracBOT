@@ -117,23 +117,30 @@ client.on('interactionCreate', async interaction => {
         const { commandName, options } = interaction;
 
         if (commandName === 'log') {
-            // まず「考え中...」状態にする（3秒ルールを回避）
+            // 1. まず保留する（3秒ルール回避）
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             
             const channel = options.getChannel('channel');
             
             try {
-                // Firebaseへの書き込み（時間がかかる可能性がある処理）
-                await db.collection('log_settings').doc(interaction.guild.id).set({ channelId: channel.id });
+                // 2. Firebaseに保存
+                await db.collection('log_settings').doc(interaction.guild.id).set({ 
+                    channelId: channel.id,
+                    guildName: interaction.guild.name
+                });
                 
-                // 完了したら editReply で内容を上書きする
-                return await interaction.editReply({ content: `✅ ログ送信先を ${channel} に設定しました。` });
+                // 3. 重要：deferReplyした後は「reply」ではなく「editReply」を使う
+                return await interaction.editReply({ 
+                    content: `✅ ログ送信先を ${channel} に設定しました。` 
+                });
             } catch (error) {
-                console.error(error);
-                return await interaction.editReply({ content: '設定の保存中にエラーが発生しました。' });
+                console.error('Log command error:', error);
+                // エラー時も editReply を使う
+                return await interaction.editReply({ 
+                    content: '設定の保存中にエラーが発生しました。' 
+                });
             }
         }
-
         if (commandName === 'request') {
             const modal = new ModalBuilder().setCustomId('request_modal').setTitle('新規コマンド作成依頼');
             modal.addComponents(
