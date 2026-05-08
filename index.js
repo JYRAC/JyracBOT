@@ -1,7 +1,8 @@
 const {
     Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder,
     ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField,
-    StringSelectMenuBuilder, ActivityType, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle
+    StringSelectMenuBuilder, ActivityType, MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle,
+    Events
 } = require('discord.js');
 const express = require('express');
 const admin = require('firebase-admin');
@@ -91,8 +92,8 @@ const commands = [
         .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
 ].map(c => c.toJSON());
 
-// --- Bot Ready ---
-client.once('ready', async () => {
+// --- Bot Ready (v15 警告対策) ---
+client.once(Events.ClientReady, async () => {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
@@ -109,7 +110,7 @@ app.get('/', (req, res) => res.send('Bot is Active!'));
 app.listen(3000);
 
 // --- インタラクション処理 ---
-client.on('interactionCreate', async interaction => {
+client.on(Events.InteractionCreate, async interaction => {
     const safeReply = async (data) => { if (!interaction.replied && !interaction.deferred) return await interaction.reply(data); };
 
     // スラッシュコマンド
@@ -285,17 +286,26 @@ client.on('interactionCreate', async interaction => {
             return await interaction.update({ embeds: [new EmbedBuilder().setTitle(data.t).setDescription(data.d).setColor(0x00AE86)], components: [interaction.message.components[0]] });
         }
 
+        // --- 一括削除ボタン (10062対策版) ---
         if (customId.startsWith('bulk_delete_yes_')) {
             const amount = parseInt(customId.split('_')[3]);
             const channelName = interaction.channel.name;
-            await interaction.channel.bulkDelete(amount, true);
-            
-            const logEmbed = new EmbedBuilder()
-                .setTitle('送信ログ')
-                .setDescription(`/deleteのボタンが使用されました。\n${amount}件のメッセージが削除されました。\nチャンネル名: ${channelName}\n消したユーザー名: ${interaction.user}`)
-                .setColor(0xE74C3C).setTimestamp();
-            await sendLog(interaction.guild, logEmbed);
-            return await interaction.update({ content: '削除完了', embeds: [], components: [] });
+
+            // まずDiscordに応答を返し、UIを「削除完了」にする
+            await interaction.update({ content: '削除完了', embeds: [], components: [] });
+
+            // 重い処理（削除とログ送信）は応答の後で行う
+            try {
+                await interaction.channel.bulkDelete(amount, true);
+                const logEmbed = new EmbedBuilder()
+                    .setTitle('送信ログ')
+                    .setDescription(`/deleteのボタンが使用されました。\n${amount}件のメッセージが削除されました。\nチャンネル名: ${channelName}\n消したユーザー名: ${interaction.user}`)
+                    .setColor(0xE74C3C).setTimestamp();
+                await sendLog(interaction.guild, logEmbed);
+            } catch (e) {
+                console.error("BulkDelete Error:", e);
+            }
+            return;
         }
 
         if (customId.startsWith('v_role_')) {
@@ -313,7 +323,7 @@ client.on('interactionCreate', async interaction => {
         if (customId.startsWith('tkt_')) {
             const [_, aid, key] = customId.split('_');
             const ch = await interaction.guild.channels.create({ name: `🎫-${interaction.user.username}`, type: ChannelType.GuildText });
-            await ch.send({ content: `${interaction.user} ${ticketMessages.get(key) || '様、発行ありがとうございます。/n以下のロールの持ち主が来るまでお待ち下さい。'} <@&${aid}>`, components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_close_c').setLabel('チケットを閉じる').setStyle(ButtonStyle.Danger))] });
+            await ch.send({ content: `${interaction.user} ${ticketMessages.get(key) || '受付中'} <@&${aid}>`, components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_close_c').setLabel('閉じる').setStyle(ButtonStyle.Danger))] });
             
             const logEmbed = new EmbedBuilder()
                 .setTitle('送信ログ')
@@ -324,19 +334,26 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (customId === 't_close_c') {
-            const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_yes').setLabel('削除').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId('t_no').setLabel('キャンセル').setStyle(ButtonStyle.Secondary));
+            const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('t_yes').setLabel('削除').setStyle(ButtonStyle.Danger), new ButtonBuilder().setCustomId('t_no').setLabel('中止').setStyle(ButtonStyle.Secondary));
             return await interaction.reply({ content: 'チケットを削除しますか？', components: [row], flags: MessageFlags.Ephemeral });
         }
 
         if (customId === 't_yes') {
             const channelName = interaction.channel.name;
+
+            // 1. まず応答を返す
+            await interaction.reply({ content: 'チャンネルを削除しています...', flags: MessageFlags.Ephemeral });
+
+            // 2. ログを送信する
             const logEmbed = new EmbedBuilder()
                 .setTitle('送信ログ')
                 .setDescription(`/ticket(閉じる)のボタンが使用されました。\nチケットチャンネルが削除されました。\nチャンネル名: ${channelName}\n消したユーザー名: ${interaction.user}`)
                 .setColor(0xE74C3C).setTimestamp();
             await sendLog(interaction.guild, logEmbed);
-            // ログ送信完了を待つため少し遅らせて削除
+
+            // 3. 最後にチャンネルを消す
             setTimeout(() => interaction.channel.delete().catch(() => {}), 1000);
+            return;
         }
 
         if (customId === 'bulk_delete_no' || customId === 'notify_cancel' || customId === 't_no') {
