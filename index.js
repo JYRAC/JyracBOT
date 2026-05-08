@@ -117,9 +117,21 @@ client.on('interactionCreate', async interaction => {
         const { commandName, options } = interaction;
 
         if (commandName === 'log') {
+            // まず「考え中...」状態にする（3秒ルールを回避）
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            
             const channel = options.getChannel('channel');
-            await db.collection('log_settings').doc(interaction.guild.id).set({ channelId: channel.id });
-            return await interaction.reply({ content: `✅ ログ送信先を ${channel} に設定しました。`, flags: MessageFlags.Ephemeral });
+            
+            try {
+                // Firebaseへの書き込み（時間がかかる可能性がある処理）
+                await db.collection('log_settings').doc(interaction.guild.id).set({ channelId: channel.id });
+                
+                // 完了したら editReply で内容を上書きする
+                return await interaction.editReply({ content: `✅ ログ送信先を ${channel} に設定しました。` });
+            } catch (error) {
+                console.error(error);
+                return await interaction.editReply({ content: '設定の保存中にエラーが発生しました。' });
+            }
         }
 
         if (commandName === 'request') {
