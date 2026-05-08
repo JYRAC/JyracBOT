@@ -88,7 +88,7 @@ const commands = [
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
     new SlashCommandBuilder().setName('request').setDescription('新規コマンドの作成依頼を送る'),
     new SlashCommandBuilder().setName('log').setDescription('ログの送信先チャンネルを設定する')
-        .addChannelOption(o => o.setName('channel').setDescription('ログチャンネル').setRequired(true))
+        .addChannelOption(o => o.setName('channel').setDescription('ログチャンネル').setRequired(false))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
 ].map(c => c.toJSON());
 
