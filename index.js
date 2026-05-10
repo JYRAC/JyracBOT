@@ -271,7 +271,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 // ログ送信
                 const logEmbed = new EmbedBuilder()
                     .setTitle('認証ログ')
-                    .setDescription(`${interaction.user} が認証を行い、ロール <@&${roleId}> を取得しました。`)
+                    .setDescription(`ロール取得者：${interaction.user} \n取得ロール： <@&${roleId}> `)
                     .setColor(0x2ECC71)
                     .setTimestamp();
                 sendLog(interaction.guild, logEmbed);
@@ -340,7 +340,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 // ログ送信
                 const logEmbed = new EmbedBuilder()
                     .setTitle('チケット作成ログ')
-                    .setDescription(`作成者: ${interaction.user}\nチャンネル: ${channel}`)
+                    .setDescription(`作成者: ${interaction.user}\nチャンネル名: ${channel}`)
                     .setColor(0x3498DB)
                     .setTimestamp();
                 sendLog(interaction.guild, logEmbed);
@@ -358,7 +358,7 @@ client.on(Events.InteractionCreate, async interaction => {
             // ログ送信
             const logEmbed = new EmbedBuilder()
                 .setTitle('チケット終了ログ')
-                .setDescription(`チャンネル: **#${interaction.channel.name}**\n実行者: ${interaction.user}`)
+                .setDescription(`チャンネル名: **#${interaction.channel.name}**\n実行者: ${interaction.user}`)
                 .setColor(0x607D8B)
                 .setTimestamp();
             sendLog(interaction.guild, logEmbed);
