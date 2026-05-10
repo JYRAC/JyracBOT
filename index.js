@@ -315,7 +315,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
             try {
                 const channel = await interaction.guild.channels.create({
-                    name: `ticket-${interaction.user.username}`,
+                    name: `🎫｜${interaction.user.username}`,
                     type: ChannelType.GuildText,
                     permissionOverwrites: [
                         { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
