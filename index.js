@@ -63,8 +63,8 @@ async function sendLog(guild, embed) {
 
 // Botのアクティビティ（ステータス）リスト
 const activities = [
-    "JYRAC公式Instはこちら！",
-    "NSFプロジェクト進行中",
+    "JYRAC公式Instは'2024nsfproject'で検索！",
+    "JYRAC公式Instは'Jyrac_official'で検索！",
     "お問い合わせはDiscordID: pitayakun7 まで",
     "広告募集中"
 ];
