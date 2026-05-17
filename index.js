@@ -69,7 +69,7 @@ const activities = [
     "広告募集中"
 ];
 
-// --- スラッシュコマンドの定義 (全12コマンド) ---
+// --- スラッシュコマンドの定義 (全13コマンド) ---
 const commands = [
     // 1. 認証パネル作成
     new SlashCommandBuilder()
@@ -155,7 +155,35 @@ const commands = [
     // 12. ヘルプ
     new SlashCommandBuilder()
         .setName('help')
-        .setDescription('コマンドの一覧と詳細を表示します')
+        .setDescription('コマンドの一覧と詳細を表示します'),
+
+    // 13. 【新規】ロールボードパネル作成 (最大10ペア)
+    new SlashCommandBuilder()
+        .setName('role-board')
+        .setDescription('ロール配布用のパネルを作成します')
+        .addStringOption(o => o.setName('title').setDescription('パネルのタイトル').setRequired(true))
+        .addRoleOption(o => o.setName('role1').setDescription('ロール 1').setRequired(true))
+        .addStringOption(o => o.setName('emoji1').setDescription('絵文字 1').setRequired(true))
+        // 2つ目以降は任意 (記述自由)
+        .addRoleOption(o => o.setName('role2').setDescription('ロール 2'))
+        .addStringOption(o => o.setName('emoji2').setDescription('絵文字 2'))
+        .addRoleOption(o => o.setName('role3').setDescription('ロール 3'))
+        .addStringOption(o => o.setName('emoji3').setDescription('絵文字 3'))
+        .addRoleOption(o => o.setName('role4').setDescription('ロール 4'))
+        .addStringOption(o => o.setName('emoji4').setDescription('絵文字 4'))
+        .addRoleOption(o => o.setName('role5').setDescription('ロール 5'))
+        .addStringOption(o => o.setName('emoji5').setDescription('絵文字 5'))
+        .addRoleOption(o => o.setName('role6').setDescription('ロール 6'))
+        .addStringOption(o => o.setName('emoji6').setDescription('絵文字 6'))
+        .addRoleOption(o => o.setName('role7').setDescription('ロール 7'))
+        .addStringOption(o => o.setName('emoji7').setDescription('絵文字 7'))
+        .addRoleOption(o => o.setName('role8').setDescription('ロール 8'))
+        .addStringOption(o => o.setName('emoji8').setDescription('絵文字 8'))
+        .addRoleOption(o => o.setName('role9').setDescription('ロール 9'))
+        .addStringOption(o => o.setName('emoji9').setDescription('絵文字 9'))
+        .addRoleOption(o => o.setName('role10').setDescription('ロール 10'))
+        .addStringOption(o => o.setName('emoji10').setDescription('絵文字 10'))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles)
 ].map(c => c.toJSON());
 
 // --- Bot 起動イベント ---
@@ -164,7 +192,7 @@ client.once(Events.ClientReady, async () => {
     
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('--- All 12 Commands Registered ---');
+        console.log('--- All 13 Commands Registered ---');
     } catch (error) {
         console.error(error);
     }
@@ -263,7 +291,6 @@ client.on(Events.InteractionCreate, async interaction => {
             const adminRole = options.getRole('admin-role');
             const key = `t_${Date.now()}`;
             
-            // 引数がなければデフォルト文ではなく、指定された条件用の文にするフラグとして空またはそのまま保存
             ticketMessages.set(key, options.getString('panel-desc') || 'お問い合わせありがとうございます。以下のロールの担当者が来るのをお待ちください。');
 
             const embed = new EmbedBuilder()
@@ -394,6 +421,47 @@ client.on(Events.InteractionCreate, async interaction => {
                 flags: MessageFlags.Ephemeral
             });
         }
+
+        // 【新規】/role-board コマンドの処理
+        if (commandName === 'role-board') {
+            const title = options.getString('title');
+            const fields = [];
+            const buttons = [];
+
+            // 10回ループを回して、入力されているロールと絵文字を取得
+            for (let i = 1; i <= 10; i++) {
+                const role = options.getRole(`role${i}`);
+                const emoji = options.getString(`emoji${i}`);
+
+                // ペアが揃っている場合のみ処理
+                if (role && emoji) {
+                    fields.push({ name: `${emoji} ${role.name}`, value: `<@&${role.id}>`, inline: true });
+                    
+                    buttons.push(
+                        new ButtonBuilder()
+                            .setCustomId(`rb_${role.id}`)
+                            .setLabel(role.name)
+                            .setEmoji(emoji)
+                            .setStyle(ButtonStyle.Secondary)
+                    );
+                }
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle(title)
+                .setDescription('欲しいロールのボタンを押してください。\nもう一度押すと外すことができます。')
+                .addFields(fields)
+                .setColor(0x2ECC71);
+
+            // Discordの仕様上、1つのActionRowには最大5つのボタンしか置けないため、5個ずつに分割する
+            const rows = [];
+            for (let i = 0; i < buttons.length; i += 5) {
+                const row = new ActionRowBuilder().addComponents(buttons.slice(i, i + 5));
+                rows.push(row);
+            }
+
+            return await interaction.reply({ embeds: [embed], components: rows });
+        }
     }
 
     // 2. モーダル送信の処理
@@ -460,6 +528,46 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isButton()) {
         const { customId } = interaction;
 
+        // 【新規】ロールボードのボタンを押したときの処理 (付与・剥奪のトグル式)
+        if (customId.startsWith('rb_')) {
+            const roleId = customId.split('_')[1];
+            await interaction.reply({ content: 'ロールを処理しています...', flags: MessageFlags.Ephemeral });
+
+            const member = interaction.member;
+            const hasRole = member.roles.cache.has(roleId);
+
+            try {
+                if (hasRole) {
+                    // すでにロールを持っていれば剥奪
+                    await member.roles.remove(roleId);
+                    await interaction.editReply({ content: `❌ ロール <@&${roleId}> を外しました。` });
+
+                    // ログ同期
+                    const logEmbed = new EmbedBuilder()
+                        .setTitle('ロールボードログ (剥奪)')
+                        .setDescription(`${interaction.user} がボタンを押し、ロール <@&${roleId}> を解除しました。`)
+                        .setColor(0xE74C3C)
+                        .setTimestamp();
+                    sendLog(interaction.guild, logEmbed);
+                } else {
+                    // ロールを持っていなければ付与
+                    await member.roles.add(roleId);
+                    await interaction.editReply({ content: `✅ ロール <@&${roleId}> を付与しました！` });
+
+                    // ログ同期
+                    const logEmbed = new EmbedBuilder()
+                        .setTitle('ロールボードログ (付与)')
+                        .setDescription(`${interaction.user} がボタンを押し、ロール <@&${roleId}> を取得しました。`)
+                        .setColor(0x2ECC71)
+                        .setTimestamp();
+                    sendLog(interaction.guild, logEmbed);
+                }
+            } catch (e) {
+                await interaction.editReply({ content: '❌ ロールの処理に失敗しました。Botのロール順位が対象ロールより上にあるか確認してください。' });
+            }
+            return;
+        }
+
         // 認証ボタン
         if (customId.startsWith('v_role_')) {
             const roleId = customId.split('_')[2];
@@ -520,7 +628,6 @@ client.on(Events.InteractionCreate, async interaction => {
 
                 const welcomeMsg = ticketMessages.get(key) || 'お問い合わせありがとうございます。以下のロールの担当者が来るのをお待ちください。';
                 
-                // ボタンのカスタムIDに adminRoleId を引き継がせるように修正
                 await channel.send({
                     content: `${interaction.user}\n${welcomeMsg}\n<@&${adminRoleId}>`,
                     components: [
@@ -548,7 +655,6 @@ client.on(Events.InteractionCreate, async interaction => {
         if (customId.startsWith('t_close_req_')) {
             const adminRoleId = customId.split('_')[3];
 
-            // 権限チェック (管理者権限 or 指定の管理ロール保持)
             const hasPermission = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator) || 
                                   interaction.member.roles.cache.has(adminRoleId);
 
@@ -559,7 +665,6 @@ client.on(Events.InteractionCreate, async interaction => {
                 });
             }
 
-            // 二段階確認メッセージの作成
             const confirmEmbed = new EmbedBuilder()
                 .setTitle('🗑️ チケットの削除確認')
                 .setDescription('本当にこのチケットを削除してもよろしいですか？\n**この操作は取り消せません。**')
