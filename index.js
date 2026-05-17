@@ -262,7 +262,9 @@ client.on(Events.InteractionCreate, async interaction => {
         if (commandName === 'ticket') {
             const adminRole = options.getRole('admin-role');
             const key = `t_${Date.now()}`;
-            ticketMessages.set(key, options.getString('panel-desc') || 'お問い合わせありがとうございます。');
+            
+            // 引数がなければデフォルト文ではなく、指定された条件用の文にするフラグとして空またはそのまま保存
+            ticketMessages.set(key, options.getString('panel-desc') || 'お問い合わせありがとうございます。以下のロールの担当者が来るのをお待ちください。');
 
             const embed = new EmbedBuilder()
                 .setTitle(options.getString('title') || 'サポートチケット')
@@ -274,7 +276,7 @@ client.on(Events.InteractionCreate, async interaction => {
                     .setCustomId(`tkt_${adminRole.id}_${key}`)
                     .setLabel('🎫 チケットを作成')
                     .setStyle(ButtonStyle.Primary)
-            );
+                );
 
             return await interaction.reply({ embeds: [embed], components: [row] });
         }
@@ -516,12 +518,14 @@ client.on(Events.InteractionCreate, async interaction => {
                     ]
                 });
 
-                const welcomeMsg = ticketMessages.get(key) || 'お問い合わせありがとうございます。';
+                const welcomeMsg = ticketMessages.get(key) || 'お問い合わせありがとうございます。以下のロールの担当者が来るのをお待ちください。';
+                
+                // ボタンのカスタムIDに adminRoleId を引き継がせるように修正
                 await channel.send({
-                    content: `${interaction.user} <@&${adminRoleId}>\n${welcomeMsg}`,
+                    content: `${interaction.user}\n${welcomeMsg}\n<@&${adminRoleId}>`,
                     components: [
                         new ActionRowBuilder().addComponents(
-                            new ButtonBuilder().setCustomId('t_close').setLabel('チケットを閉じる').setStyle(ButtonStyle.Danger)
+                            new ButtonBuilder().setCustomId(`t_close_req_${adminRoleId}`).setLabel('🔒 チケットを閉じる').setStyle(ButtonStyle.Danger)
                         )
                     ]
                 });
@@ -540,9 +544,50 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // チケットを閉じるボタン
-        if (customId === 't_close') {
-            await interaction.reply({ content: 'チケットを2秒後に削除します...', flags: MessageFlags.Ephemeral });
+        // 【1段階目】チケットを閉じる要求ボタンが押されたとき
+        if (customId.startsWith('t_close_req_')) {
+            const adminRoleId = customId.split('_')[3];
+
+            // 権限チェック (管理者権限 or 指定の管理ロール保持)
+            const hasPermission = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator) || 
+                                  interaction.member.roles.cache.has(adminRoleId);
+
+            if (!hasPermission) {
+                return await interaction.reply({ 
+                    content: '権限がない人はチケットの削除ができません。担当者に閉じてもらってください。', 
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+
+            // 二段階確認メッセージの作成
+            const confirmEmbed = new EmbedBuilder()
+                .setTitle('🗑️ チケットの削除確認')
+                .setDescription('本当にこのチケットを削除してもよろしいですか？\n**この操作は取り消せません。**')
+                .setColor(0xE74C3C);
+
+            const confirmRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`t_close_confirm_${adminRoleId}`).setLabel('本当に削除する').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId('t_close_cancel').setLabel('キャンセル').setStyle(ButtonStyle.Secondary)
+            );
+
+            return await interaction.reply({ embeds: [confirmEmbed], components: [confirmRow] });
+        }
+
+        // 【2段階目】本当に削除するボタンが押されたとき
+        if (customId.startsWith('t_close_confirm_')) {
+            const adminRoleId = customId.split('_')[3];
+
+            const hasPermission = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator) || 
+                                  interaction.member.roles.cache.has(adminRoleId);
+
+            if (!hasPermission) {
+                return await interaction.reply({ 
+                    content: '権限がない人はチケットの削除ができません。担当者に閉じてもらってください。', 
+                    flags: MessageFlags.Ephemeral 
+                });
+            }
+
+            await interaction.reply({ content: 'チケットを削除しています...' });
             
             const logEmbed = new EmbedBuilder()
                 .setTitle('チケット終了ログ')
@@ -553,8 +598,13 @@ client.on(Events.InteractionCreate, async interaction => {
 
             setTimeout(() => {
                 interaction.channel.delete().catch(() => {});
-            }, 2000);
+            }, 1000);
             return;
+        }
+
+        // 【キャンセル】削除を中止したとき
+        if (customId === 't_close_cancel') {
+            return await interaction.message.delete().catch(() => {});
         }
 
         // 通知登録解除ボタン
