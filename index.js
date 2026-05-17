@@ -61,6 +61,21 @@ async function sendLog(guild, embed) {
     }
 }
 
+// --- 共通関数: コマンド実行ログ送信 ---
+async function sendCommandLog(interaction, commandName) {
+    const embed = new EmbedBuilder()
+        .setTitle('📋 コマンド実行ログ')
+        .addFields(
+            { name: '使用者', value: `${interaction.user}`, inline: true },
+            { name: '使用コマンド', value: `/${commandName}`, inline: true },
+            { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+        )
+        .setColor(0x95A5A6)
+        .setTimestamp();
+
+    await sendLog(interaction.guild, embed);
+}
+
 // Botのアクティビティ（ステータス）リスト
 const activities = [
     "JYRAC公式Instは'2024nsfproject'で検索！",
@@ -210,8 +225,10 @@ client.on(Events.InteractionCreate, async interaction => {
                     const replyMsg = isUpdate 
                         ? `🔄 以前の設定を解除し、ログ送信先を ${channel} に更新しました。` 
                         : `✅ ログ送信先を ${channel} に設定しました。`;
-                    
-                    return await interaction.editReply(replyMsg);
+
+                    await interaction.editReply(replyMsg);
+                    sendCommandLog(interaction, commandName);
+                    return;
                 } else {
                     if (!logDoc.exists) return await interaction.editReply('❌ 現在、ログ設定は登録されていません。');
                     
@@ -226,8 +243,8 @@ client.on(Events.InteractionCreate, async interaction => {
         // /verify コマンド
         if (commandName === 'verify') {
             const role = options.getRole('role');
-            const title = options.getString('title') || '認証パネル';
-            const desc = options.getString('description') || '以下のボタンを押して認証を完了してください。';
+            const title = options.getString('title') ?? '認証パネル';
+            const desc = options.getString('description') ?? '以下のボタンを押して認証を完了してください。';
 
             const embed = new EmbedBuilder()
                 .setTitle(title)
@@ -241,7 +258,9 @@ client.on(Events.InteractionCreate, async interaction => {
                     .setStyle(ButtonStyle.Success)
             );
 
-            return await interaction.reply({ embeds: [embed], components: [row] });
+            await interaction.reply({ embeds: [embed], components: [row] });
+            sendCommandLog(interaction, commandName); // fire-and-forget
+            return;
         }
 
         // /delete コマンド
@@ -251,20 +270,20 @@ client.on(Events.InteractionCreate, async interaction => {
                 new ButtonBuilder().setCustomId(`bulk_yes_${amount}`).setLabel('削除').setStyle(ButtonStyle.Danger),
                 new ButtonBuilder().setCustomId('bulk_no').setLabel('中止').setStyle(ButtonStyle.Secondary)
             );
-            return await interaction.reply({
+            await interaction.reply({
                 content: `${amount}件のメッセージを削除しますか？`,
                 components: [row],
                 flags: MessageFlags.Ephemeral
             });
+            sendCommandLog(interaction, commandName);
+            return;
         }
 
         // /ticket コマンド
         if (commandName === 'ticket') {
             const adminRole = options.getRole('admin-role');
             const key = `t_${Date.now()}`;
-            
-            // 引数がなければデフォルト文ではなく、指定された条件用の文にするフラグとして空またはそのまま保存
-            ticketMessages.set(key, options.getString('panel-desc') || 'お問い合わせありがとうございます。以下のロールの担当者が来るのをお待ちください。');
+            ticketMessages.set(key, options.getString('panel-desc') ?? null);
 
             const embed = new EmbedBuilder()
                 .setTitle(options.getString('title') || 'サポートチケット')
@@ -276,9 +295,11 @@ client.on(Events.InteractionCreate, async interaction => {
                     .setCustomId(`tkt_${adminRole.id}_${key}`)
                     .setLabel('🎫 チケットを作成')
                     .setStyle(ButtonStyle.Primary)
-                );
+            );
 
-            return await interaction.reply({ embeds: [embed], components: [row] });
+            await interaction.reply({ embeds: [embed], components: [row] });
+            sendCommandLog(interaction, commandName);
+            return;
         }
 
         // /give-role / /remove-role コマンド
@@ -290,9 +311,11 @@ client.on(Events.InteractionCreate, async interaction => {
                 if (commandName === 'give-role') {
                     await member.roles.add(role);
                     await interaction.reply({ content: `✅ ${member} にロール **${role.name}** を付与しました。`, flags: MessageFlags.Ephemeral });
+                    sendCommandLog(interaction, commandName);
                 } else {
                     await member.roles.remove(role);
                     await interaction.reply({ content: `✅ ${member} からロール **${role.name}** を剥奪しました。`, flags: MessageFlags.Ephemeral });
+                    sendCommandLog(interaction, commandName);
                 }
             } catch (e) {
                 await interaction.reply({ content: '❌ 権限不足などの理由により操作に失敗しました。', flags: MessageFlags.Ephemeral });
@@ -314,7 +337,9 @@ client.on(Events.InteractionCreate, async interaction => {
                 .setDescription(`所持しているロール一覧:\n${roles}`)
                 .setColor(0x00AE86);
 
-            return await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+            await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+            sendCommandLog(interaction, commandName);
+            return;
         }
 
         // /receive-notifications コマンド
@@ -331,7 +356,9 @@ client.on(Events.InteractionCreate, async interaction => {
             }
 
             await db.collection('subscribers').doc(interaction.user.id).set({ date: new Date() });
-            return await interaction.editReply('✅ 重要なお知らせの通知登録が完了しました！');
+            await interaction.editReply('✅ 重要なお知らせの通知登録が完了しました！');
+            sendCommandLog(interaction, commandName);
+            return;
         }
 
         // /notice / /broadcast コマンド (モーダル呼出)
@@ -342,11 +369,45 @@ client.on(Events.InteractionCreate, async interaction => {
 
             if (commandName === 'broadcast') {
                 broadcastRoleMap.set(interaction.user.id, options.getRole('target-role').id);
+
+                // /broadcast モーダル: 発言者・内容・URLの3欄
+                const modal = new ModalBuilder()
+                    .setCustomId('broadcast_modal')
+                    .setTitle('ロール宛て一斉DM');
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('dm_speaker')
+                            .setLabel('発言者')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('dm_text')
+                            .setLabel('送信するメッセージ内容')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setRequired(true)
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('dm_url')
+                            .setLabel('URL（任意）')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(false)
+                    )
+                );
+
+                await interaction.showModal(modal);
+                sendCommandLog(interaction, commandName); // showModal後にfire-and-forget
+                return;
             }
 
+            // /notice モーダル (変更なし)
             const modal = new ModalBuilder()
-                .setCustomId(commandName === 'notice' ? 'notice_modal' : 'broadcast_modal')
-                .setTitle(commandName === 'notice' ? 'お知らせ一斉DM' : 'ロール宛て一斉DM');
+                .setCustomId('notice_modal')
+                .setTitle('お知らせ一斉DM');
 
             modal.addComponents(
                 new ActionRowBuilder().addComponents(
@@ -358,7 +419,9 @@ client.on(Events.InteractionCreate, async interaction => {
                 )
             );
 
-            return await interaction.showModal(modal);
+            await interaction.showModal(modal);
+            sendCommandLog(interaction, commandName); // showModal後にfire-and-forget
+            return;
         }
 
         // /request コマンド
@@ -373,7 +436,9 @@ client.on(Events.InteractionCreate, async interaction => {
                 new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('r_desc').setLabel('詳しい機能・説明').setStyle(TextInputStyle.Paragraph).setRequired(true))
             );
 
-            return await interaction.showModal(modal);
+            await interaction.showModal(modal);
+            sendCommandLog(interaction, commandName); // showModal後にfire-and-forget
+            return;
         }
 
         // /help コマンド
@@ -388,18 +453,19 @@ client.on(Events.InteractionCreate, async interaction => {
                     { label: '/role-confirmation (確認)', value: 'h_role' }
                 ]);
 
-            return await interaction.reply({
+            await interaction.reply({
                 content: '📜 **コマンドヘルプ**\n詳細を確認したい機能を選択してください。',
                 components: [new ActionRowBuilder().addComponents(select)],
                 flags: MessageFlags.Ephemeral
             });
+            sendCommandLog(interaction, commandName);
+            return;
         }
     }
 
     // 2. モーダル送信の処理
     if (interaction.isModalSubmit()) {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-        const textContent = interaction.fields.getTextInputValue('dm_text').catch(() => null);
 
         // 作成依頼の処理
         if (interaction.customId === 'req_modal') {
@@ -440,8 +506,26 @@ client.on(Events.InteractionCreate, async interaction => {
         if (interaction.customId === 'broadcast_modal') {
             const roleId = broadcastRoleMap.get(interaction.user.id);
             if (!roleId) return await interaction.editReply('❌ セッションが切れました。もう一度コマンドからやり直してください。');
-            
+
             broadcastRoleMap.delete(interaction.user.id);
+
+            const speaker = interaction.fields.getTextInputValue('dm_speaker');
+            const textContent = interaction.fields.getTextInputValue('dm_text');
+            const url = interaction.fields.getTextInputValue('dm_url').trim();
+
+            const dmEmbed = new EmbedBuilder()
+                .setTitle('📢 お知らせ')
+                .addFields(
+                    { name: '発言者', value: speaker },
+                    { name: '内容', value: textContent }
+                )
+                .setColor(0xE67E22)
+                .setTimestamp();
+
+            if (url) {
+                dmEmbed.addFields({ name: 'URL', value: url });
+            }
+
             const members = (await interaction.guild.members.fetch()).filter(m => m.roles.cache.has(roleId) && !m.user.bot);
             let count = 0;
 
@@ -518,9 +602,21 @@ client.on(Events.InteractionCreate, async interaction => {
                     ]
                 });
 
-                const welcomeMsg = ticketMessages.get(key) || 'お問い合わせありがとうございます。以下のロールの担当者が来るのをお待ちください。';
-                
-                // ボタンのカスタムIDに adminRoleId を引き継がせるように修正
+                // panel-descが設定されていればそれを使用、なければデフォルトの案内文
+                const customDesc = ticketMessages.get(key);
+                const panelDesc = customDesc !== null && customDesc !== undefined
+                    ? customDesc
+                    : '発行ありがとうございます。担当者が来るのを今しばらくお待ちください。';
+
+                const ticketEmbed = new EmbedBuilder()
+                    .setTitle('📋 パネルでチケット発行')
+                    .addFields(
+                        { name: '発行者', value: `${interaction.user}` },
+                        { name: 'メッセージ', value: panelDesc }
+                    )
+                    .setColor(0x9B59B6)
+                    .setTimestamp();
+
                 await channel.send({
                     content: `${interaction.user}\n${welcomeMsg}\n<@&${adminRoleId}>`,
                     components: [
@@ -544,50 +640,9 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // 【1段階目】チケットを閉じる要求ボタンが押されたとき
-        if (customId.startsWith('t_close_req_')) {
-            const adminRoleId = customId.split('_')[3];
-
-            // 権限チェック (管理者権限 or 指定の管理ロール保持)
-            const hasPermission = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator) || 
-                                  interaction.member.roles.cache.has(adminRoleId);
-
-            if (!hasPermission) {
-                return await interaction.reply({ 
-                    content: '権限がない人はチケットの削除ができません。担当者に閉じてもらってください。', 
-                    flags: MessageFlags.Ephemeral 
-                });
-            }
-
-            // 二段階確認メッセージの作成
-            const confirmEmbed = new EmbedBuilder()
-                .setTitle('🗑️ チケットの削除確認')
-                .setDescription('本当にこのチケットを削除してもよろしいですか？\n**この操作は取り消せません。**')
-                .setColor(0xE74C3C);
-
-            const confirmRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId(`t_close_confirm_${adminRoleId}`).setLabel('本当に削除する').setStyle(ButtonStyle.Danger),
-                new ButtonBuilder().setCustomId('t_close_cancel').setLabel('キャンセル').setStyle(ButtonStyle.Secondary)
-            );
-
-            return await interaction.reply({ embeds: [confirmEmbed], components: [confirmRow] });
-        }
-
-        // 【2段階目】本当に削除するボタンが押されたとき
-        if (customId.startsWith('t_close_confirm_')) {
-            const adminRoleId = customId.split('_')[3];
-
-            const hasPermission = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator) || 
-                                  interaction.member.roles.cache.has(adminRoleId);
-
-            if (!hasPermission) {
-                return await interaction.reply({ 
-                    content: '権限がない人はチケットの削除ができません。担当者に閉じてもらってください。', 
-                    flags: MessageFlags.Ephemeral 
-                });
-            }
-
-            await interaction.reply({ content: 'チケットを削除しています...' });
+        // チケットを閉じるボタン
+        if (customId === 't_close') {
+            await interaction.reply({ content: 'チケットを2秒後に削除します...', flags: MessageFlags.Ephemeral });
             
             const logEmbed = new EmbedBuilder()
                 .setTitle('チケット終了ログ')
@@ -600,11 +655,6 @@ client.on(Events.InteractionCreate, async interaction => {
                 interaction.channel.delete().catch(() => {});
             }, 1000);
             return;
-        }
-
-        // 【キャンセル】削除を中止したとき
-        if (customId === 't_close_cancel') {
-            return await interaction.message.delete().catch(() => {});
         }
 
         // 通知登録解除ボタン
@@ -628,7 +678,7 @@ client.on(Events.InteractionCreate, async interaction => {
             if (value === 'h_verify') helpText = '**/verify**\nロール管理権限が必要です。ボタン付きの認証パネルを設置し、ユーザーが手軽にロールを獲得できるようにします。';
             if (value === 'h_ticket') helpText = '**/ticket**\nチャンネル管理権限が必要です。ユーザー個別の問い合わせ用プライベートチャンネルを開設するパネルを設置します。';
             if (value === 'h_log') helpText = '**/log**\n管理者権限が必要です。認証や一括削除のアクションが行われた際に送信されるログチャンネルの指定・解除を行います。';
-            if (value === 'h_role') helpText = '**/role-confirmation**\nモデレーター権限が必要です。対象のユーザーが現在持っている全ロールの一覧を衣服のIDを覗いてすっきり表示します。';
+            if (value === 'h_role') helpText = '**/role-confirmation**\nモデレーター権限が必要です。対象のユーザーが現在持っている全ロールの一覧を表示します。';
 
             return await interaction.update({ content: `📜 **ヘルプ詳細**\n\n${helpText}`, components: [interaction.message.components[0]] });
         }
