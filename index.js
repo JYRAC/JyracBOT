@@ -334,7 +334,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         // /notice / /broadcast コマンド (モーダル呼出)
         if (commandName === 'notice' || commandName === 'broadcast') {
-            if (options.getString('password') !== process.env.ADMIN_PASSWORD) {
+            if (options.getString('password') !== process.env.BROADCAST_PASSWORD) {
                 return await interaction.reply({ content: '❌ パスワードが一致しません。', flags: MessageFlags.Ephemeral });
             }
 
