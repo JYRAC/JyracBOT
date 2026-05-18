@@ -241,6 +241,7 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // /verify コマンド
+        // 修正: タイトル・説明が入力されていればそれを使い、なければデフォルト文言を使う
         if (commandName === 'verify') {
             const role = options.getRole('role');
             const title = options.getString('title') ?? '認証パネル';
@@ -280,14 +281,15 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // /ticket コマンド
+        // 修正: タイトル・説明が入力されていればそれを使い、なければデフォルト文言を使う
         if (commandName === 'ticket') {
             const adminRole = options.getRole('admin-role');
             const key = `t_${Date.now()}`;
             ticketMessages.set(key, options.getString('panel-desc') ?? null);
 
             const embed = new EmbedBuilder()
-                .setTitle(options.getString('title') || 'サポートチケット')
-                .setDescription(options.getString('description') || 'チケットを作成するには下のボタンを押してください。')
+                .setTitle(options.getString('title') ?? 'サポートチケット')
+                .setDescription(options.getString('description') ?? 'チケットを作成するには下のボタンを押してください。')
                 .setColor(0x9B59B6);
 
             const row = new ActionRowBuilder().addComponents(
@@ -363,7 +365,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         // /notice / /broadcast コマンド (モーダル呼出)
         if (commandName === 'notice' || commandName === 'broadcast') {
-            if (options.getString('password') !== process.env.ADMIN_PASSWORD) {
+            if (options.getString('password') !== process.env.BROADCAST_PASSWORD) {
                 return await interaction.reply({ content: '❌ パスワードが一致しません。', flags: MessageFlags.Ephemeral });
             }
 
@@ -489,6 +491,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
         // お知らせDM送信 (/notice)
         if (interaction.customId === 'notice_modal') {
+            const textContent = interaction.fields.getTextInputValue('dm_text');
             const subs = await db.collection('subscribers').get();
             let count = 0;
 
@@ -503,6 +506,7 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // ロール宛て一斉DM送信 (/broadcast)
+        // 修正: 発言者・内容・URLの3欄をEmbedにまとめてDM送信
         if (interaction.customId === 'broadcast_modal') {
             const roleId = broadcastRoleMap.get(interaction.user.id);
             if (!roleId) return await interaction.editReply('❌ セッションが切れました。もう一度コマンドからやり直してください。');
@@ -531,7 +535,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
             for (const [id, m] of members) {
                 try {
-                    await m.send(`📢 **ロール一斉送信メッセージ**\n\n${textContent}`);
+                    await m.send({ embeds: [dmEmbed] });
                     count++;
                     await new Promise(r => setTimeout(r, 800)); // レートリミット対策
                 } catch (e) {}
@@ -554,8 +558,13 @@ client.on(Events.InteractionCreate, async interaction => {
                 await interaction.editReply({ content: '✅ 認証が完了しました！ロールを付与しました。' });
 
                 const logEmbed = new EmbedBuilder()
-                    .setTitle('認証ログ')
-                    .setDescription(`${interaction.user} が認証を行い、ロール <@&${roleId}> を取得しました。`)
+                    .setTitle('🔐 認証ログ')
+                    .addFields(
+                        { name: '使用者', value: `${interaction.user}`, inline: true },
+                        { name: '使用コマンド', value: '認証ボタン', inline: true },
+                        { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
+                        { name: '取得ロール', value: `<@&${roleId}>`, inline: false }
+                    )
                     .setColor(0x2ECC71)
                     .setTimestamp();
                 sendLog(interaction.guild, logEmbed);
@@ -575,8 +584,14 @@ client.on(Events.InteractionCreate, async interaction => {
             try {
                 await interaction.channel.bulkDelete(amount, true);
                 const logEmbed = new EmbedBuilder()
-                    .setTitle('メッセージ削除ログ')
-                    .setDescription(`チャンネル: **#${chName}**\n実行者: ${interaction.user}\n削除件数: ${amount}件`)
+                    .setTitle('🗑️ メッセージ削除ログ')
+                    .addFields(
+                        { name: '使用者', value: `${interaction.user}`, inline: true },
+                        { name: '使用コマンド', value: '/delete', inline: true },
+                        { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
+                        { name: 'チャンネル', value: `**#${chName}**`, inline: true },
+                        { name: '削除件数', value: `${amount}件`, inline: true }
+                    )
                     .setColor(0xE74C3C)
                     .setTimestamp();
                 sendLog(interaction.guild, logEmbed);
@@ -587,13 +602,17 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // チケット作成ボタン
+        // 修正: チャンネル名を 🎫｜[username] に変更
+        // 修正: 送信メッセージを指定フォーマットに変更（panel-descがあれば置き換え）
         if (customId.startsWith('tkt_')) {
-            const [_, adminRoleId, key] = customId.split('_');
+            const parts = customId.split('_');
+            const adminRoleId = parts[1];
+            const key = parts.slice(2).join('_');
             await interaction.reply({ content: 'チケットチャンネルを作成しています...', flags: MessageFlags.Ephemeral });
 
             try {
                 const channel = await interaction.guild.channels.create({
-                    name: `ticket-${interaction.user.username}`,
+                    name: `🎫｜${interaction.user.username}`,
                     type: ChannelType.GuildText,
                     permissionOverwrites: [
                         { id: interaction.guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
@@ -618,10 +637,11 @@ client.on(Events.InteractionCreate, async interaction => {
                     .setTimestamp();
 
                 await channel.send({
-                    content: `${interaction.user}\n${welcomeMsg}\n<@&${adminRoleId}>`,
+                    content: `<@&${adminRoleId}>`,
+                    embeds: [ticketEmbed],
                     components: [
                         new ActionRowBuilder().addComponents(
-                            new ButtonBuilder().setCustomId(`t_close_req_${adminRoleId}`).setLabel('🔒 チケットを閉じる').setStyle(ButtonStyle.Danger)
+                            new ButtonBuilder().setCustomId('t_close').setLabel('チケットを閉じる').setStyle(ButtonStyle.Danger)
                         )
                     ]
                 });
@@ -629,8 +649,13 @@ client.on(Events.InteractionCreate, async interaction => {
                 await interaction.editReply({ content: `✅ チケットを作成しました: ${channel}` });
 
                 const logEmbed = new EmbedBuilder()
-                    .setTitle('チケット作成ログ')
-                    .setDescription(`作成者: ${interaction.user}\nチャンネル: ${channel}`)
+                    .setTitle('🎫 チケット作成ログ')
+                    .addFields(
+                        { name: '使用者', value: `${interaction.user}`, inline: true },
+                        { name: '使用コマンド', value: 'チケット作成ボタン', inline: true },
+                        { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
+                        { name: 'チャンネル', value: `${channel}`, inline: false }
+                    )
                     .setColor(0x3498DB)
                     .setTimestamp();
                 sendLog(interaction.guild, logEmbed);
@@ -645,15 +670,20 @@ client.on(Events.InteractionCreate, async interaction => {
             await interaction.reply({ content: 'チケットを2秒後に削除します...', flags: MessageFlags.Ephemeral });
             
             const logEmbed = new EmbedBuilder()
-                .setTitle('チケット終了ログ')
-                .setDescription(`チャンネル: **#${interaction.channel.name}**\n実行者: ${interaction.user}`)
+                .setTitle('🔒 チケット終了ログ')
+                .addFields(
+                    { name: '使用者', value: `${interaction.user}`, inline: true },
+                    { name: '使用コマンド', value: 'チケットを閉じるボタン', inline: true },
+                    { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
+                    { name: 'チャンネル', value: `**#${interaction.channel.name}**`, inline: false }
+                )
                 .setColor(0x607D8B)
                 .setTimestamp();
             sendLog(interaction.guild, logEmbed);
 
             setTimeout(() => {
                 interaction.channel.delete().catch(() => {});
-            }, 1000);
+            }, 2000);
             return;
         }
 
