@@ -47,7 +47,7 @@ const db = admin.firestore();
 // Gemini クライアント初期化
 // ============================================================
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const gemini = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+const gemini = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
 // ============================================================
 // メモリ保持用マップ
