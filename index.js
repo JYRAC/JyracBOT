@@ -160,7 +160,6 @@ const commands = [
         .setDescription('指定ロールの所持者に一斉DMを送信します(管理者専用)')
         .addRoleOption(o => o.setName('target-role').setDescription('送信対象のロール').setRequired(true))
         .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
 
     // 11. 作成依頼
     new SlashCommandBuilder()
