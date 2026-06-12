@@ -95,23 +95,28 @@ const activities = [
  * @param {import('discord.js').ChatInputCommandInteraction} interaction - インタラクション
  */
 async function exportChannelLog(channel, interaction) {
-    const GAS_URL = process.env.GAS_WEBHOOK_URL; // GAS WebアプリのURLを環境変数で管理
+    const GAS_URL = process.env.GAS_WEBHOOK_URL;
 
     // ---- 1. 全メッセージを古い順に取得 ----
     let allMessages = [];
     let lastId = null;
 
-    await interaction.editReply('📥 メッセージを収集中... (大量の場合は数分かかります)');
+    await interaction.editReply('📥 **メッセージを収集中です...**\nチャンネルの投稿数が多い場合は時間がかかります。');
 
     while (true) {
-        const options = { limit: 100 };
-        if (lastId) options.before = lastId;
+        const fetchOptions = { limit: 100 };
+        if (lastId) fetchOptions.before = lastId;
 
-        const fetched = await channel.messages.fetch(options);
+        const fetched = await channel.messages.fetch(fetchOptions);
         if (fetched.size === 0) break;
 
         allMessages = allMessages.concat([...fetched.values()]);
         lastId = fetched.last().id;
+
+        // 500件ごとに進捗を更新
+        if (allMessages.length % 500 === 0) {
+            await interaction.editReply(`📥 **メッセージを収集中です...**\n現在 ${allMessages.length} 件取得済み`).catch(() => {});
+        }
 
         // Discord APIレートリミット対策
         await new Promise(r => setTimeout(r, 500));
@@ -127,15 +132,12 @@ async function exportChannelLog(channel, interaction) {
     // ---- 2. TXT形式に整形 ----
     const lines = allMessages.map(msg => {
         const timestamp = msg.createdAt.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-        const author = `${msg.author.username}`;
+        const author = msg.author.username;
         const content = msg.content || '[添付ファイルまたは埋め込みのみ]';
         return `[${timestamp}] ${author}: ${content}`;
     });
 
     const txtContent = lines.join('\n');
-
-    // ---- 3. GASへPOST ----
-    await interaction.editReply(`✅ ${allMessages.length}件のメッセージを収集しました。GASへ送信中...`);
 
     const payload = {
         channelName: channel.name,
@@ -146,30 +148,45 @@ async function exportChannelLog(channel, interaction) {
         logText: txtContent
     };
 
-    try {
-        const response = await fetch(GAS_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
+    // ---- 3. GASへの送信は非同期で切り離し、先にDiscordへ「考え中」メッセージを返す ----
+    // GASのGemini処理は数十秒〜数分かかるためDiscordのタイムアウトを回避する
+    await interaction.editReply(
+        `⏳ **${allMessages.length}件のメッセージを収集しました。**\n` +
+        `📌 対象チャンネル: #${channel.name}\n` +
+        `🤖 GASへ送信してGeminiで処理中です... しばらくお待ちください。\n` +
+        `（完了するとこのチャンネルに結果を送信します）`
+    );
 
-        const resultText = await response.text();
+    // GAS送信＋結果通知をバックグラウンドで実行（awaitしない）
+    (async () => {
+        try {
+            const response = await fetch(GAS_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
 
-        if (response.ok) {
-            await interaction.editReply(
-                `✅ **エクスポート完了！**\n` +
-                `📌 チャンネル: #${channel.name}\n` +
-                `📩 取得件数: ${allMessages.length}件\n` +
-                `📄 Googleドキュメントへの書き込みをGASで処理中です。\n` +
-                `🔗 ${resultText}`
-            );
-        } else {
-            await interaction.editReply(`❌ GASへの送信に失敗しました。\nステータス: ${response.status}\n${resultText}`);
+            const resultText = await response.text();
+
+            if (response.ok) {
+                await interaction.followUp(
+                    `✅ **エクスポート完了！**\n` +
+                    `📌 チャンネル: #${channel.name}\n` +
+                    `📩 取得件数: ${allMessages.length}件\n` +
+                    `🔗 ${resultText}`
+                );
+            } else {
+                await interaction.followUp(
+                    `❌ GASへの送信に失敗しました。\nステータス: ${response.status}\n${resultText}`
+                );
+            }
+        } catch (e) {
+            console.error('GAS送信エラー:', e);
+            await interaction.followUp(
+                '❌ GASへの送信中にエラーが発生しました。GAS_WEBHOOK_URLを確認してください。'
+            ).catch(() => {});
         }
-    } catch (e) {
-        console.error('GAS送信エラー:', e);
-        await interaction.editReply('❌ GASへの送信中にエラーが発生しました。GAS_WEBHOOK_URLを確認してください。');
-    }
+    })();
 }
 
 // --- スラッシュコマンドの定義 (全13コマンド) ---
