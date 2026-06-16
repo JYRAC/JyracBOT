@@ -93,14 +93,15 @@ const activities = [
 /**
  * Discord APIの100件制限を超えて全メッセージを取得する
  */
-async function fetchAllMessages(channel, { limit = 100, before, after } = {}) {
+async function fetchAllMessages(channel, { limit = null, before, after } = {}) {
     const messages = [];
     let lastId = before || null;
-    let remaining = limit;
+    // limit が null の場合は無制限（全件取得）
+    const unlimited = limit === null;
 
-    while (remaining > 0) {
-        const fetchCount = Math.min(remaining, 100);
-        const options = { limit: fetchCount };
+    while (unlimited || messages.length < limit) {
+        const remaining = unlimited ? 100 : Math.min(limit - messages.length, 100);
+        const options = { limit: remaining };
         if (lastId) options.before = lastId;
         if (after && messages.length === 0) options.after = after;
 
@@ -113,18 +114,18 @@ async function fetchAllMessages(channel, { limit = 100, before, after } = {}) {
         messages.unshift(...sorted);
 
         lastId = batch.last().id;
-        remaining -= batch.size;
 
-        if (batch.size < fetchCount) break;
+        if (batch.size < remaining) break;
     }
 
     if (after) {
         const afterMsg = messages.find((m) => m.id === after);
         const afterIndex = afterMsg ? messages.indexOf(afterMsg) + 1 : 0;
-        return messages.slice(afterIndex).slice(0, limit);
+        const sliced = messages.slice(afterIndex);
+        return unlimited ? sliced : sliced.slice(0, limit);
     }
 
-    return messages.slice(0, limit);
+    return unlimited ? messages : messages.slice(0, limit);
 }
 
 /**
@@ -289,9 +290,8 @@ const commands = [
         )
         .addIntegerOption(o =>
             o.setName('limit')
-                .setDescription('取得するメッセージ数 (最大: 10000, デフォルト: 100)')
+                .setDescription('取得するメッセージ数（省略時: チャンネル全件）')
                 .setMinValue(1)
-                .setMaxValue(10000)
                 .setRequired(false)
         )
         .addStringOption(o =>
@@ -601,7 +601,7 @@ client.on(Events.InteractionCreate, async interaction => {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
             const targetChannel = options.getChannel('channel') || interaction.channel;
-            const limit = options.getInteger('limit') || 100;
+            const limit = options.getInteger('limit') ?? null; // null = 全件取得
             const before = options.getString('before') || undefined;
             const after = options.getString('after') || undefined;
 
@@ -615,7 +615,7 @@ client.on(Events.InteractionCreate, async interaction => {
             }
 
             try {
-                await interaction.editReply(`⏳ **#${targetChannel.name}** のメッセージを取得中... (最大 ${limit} 件)`);
+                const limitLabel = limit !== null ? `最大 ${limit} 件` : '全件'; await interaction.editReply(`⏳ **#${targetChannel.name}** のメッセージを取得中... (${limitLabel})`);
 
                 const messages = await fetchAllMessages(targetChannel, { limit, before, after });
 
