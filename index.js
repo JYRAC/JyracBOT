@@ -84,112 +84,7 @@ const activities = [
     "広告募集中"
 ];
 
-// ============================================================
-// --- /exportlog: チャンネル全メッセージをGASへ送信する関数 ---
-// ============================================================
-
-/**
- * 指定チャンネルの全メッセージを取得してTXT形式の文字列に変換し、
- * GAS WebアプリのURLへPOSTする。
- * @param {import('discord.js').TextChannel} channel - 対象チャンネル
- * @param {import('discord.js').ChatInputCommandInteraction} interaction - インタラクション
- */
-async function exportChannelLog(channel, interaction) {
-    const GAS_URL = process.env.GAS_WEBHOOK_URL;
-
-    // ---- 1. 全メッセージを古い順に取得 ----
-    let allMessages = [];
-    let lastId = null;
-
-    await interaction.editReply('📥 **メッセージを収集中です...**\nチャンネルの投稿数が多い場合は時間がかかります。');
-
-    while (true) {
-        const fetchOptions = { limit: 100 };
-        if (lastId) fetchOptions.before = lastId;
-
-        const fetched = await channel.messages.fetch(fetchOptions);
-        if (fetched.size === 0) break;
-
-        allMessages = allMessages.concat([...fetched.values()]);
-        lastId = fetched.last().id;
-
-        // 500件ごとに進捗を更新
-        if (allMessages.length % 500 === 0) {
-            await interaction.editReply(`📥 **メッセージを収集中です...**\n現在 ${allMessages.length} 件取得済み`).catch(() => {});
-        }
-
-        // Discord APIレートリミット対策
-        await new Promise(r => setTimeout(r, 500));
-    }
-
-    if (allMessages.length === 0) {
-        return await interaction.editReply('❌ 取得できるメッセージがありませんでした。');
-    }
-
-    // 古い順に並び替え
-    allMessages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-
-    // ---- 2. TXT形式に整形 ----
-    const lines = allMessages.map(msg => {
-        const timestamp = msg.createdAt.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-        const author = msg.author.username;
-        const content = msg.content || '[添付ファイルまたは埋め込みのみ]';
-        return `[${timestamp}] ${author}: ${content}`;
-    });
-
-    const txtContent = lines.join('\n');
-
-    const payload = {
-        channelName: channel.name,
-        channelId: channel.id,
-        guildName: interaction.guild.name,
-        messageCount: allMessages.length,
-        exportedAt: new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }),
-        logText: txtContent
-    };
-
-    // ---- 3. GASへの送信は非同期で切り離し、先にDiscordへ「考え中」メッセージを返す ----
-    // GASのGemini処理は数十秒〜数分かかるためDiscordのタイムアウトを回避する
-    await interaction.editReply(
-        `⏳ **${allMessages.length}件のメッセージを収集しました。**\n` +
-        `📌 対象チャンネル: #${channel.name}\n` +
-        `🤖 GASへ送信してGeminiで処理中です... しばらくお待ちください。\n` +
-        `（完了するとこのチャンネルに結果を送信します）`
-    );
-
-    // GAS送信＋結果通知をバックグラウンドで実行（awaitしない）
-    (async () => {
-        try {
-            const response = await fetch(GAS_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            const resultText = await response.text();
-
-            if (response.ok) {
-                await interaction.followUp(
-                    `✅ **エクスポート完了！**\n` +
-                    `📌 チャンネル: #${channel.name}\n` +
-                    `📩 取得件数: ${allMessages.length}件\n` +
-                    `🔗 ${resultText}`
-                );
-            } else {
-                await interaction.followUp(
-                    `❌ GASへの送信に失敗しました。\nステータス: ${response.status}\n${resultText}`
-                );
-            }
-        } catch (e) {
-            console.error('GAS送信エラー:', e);
-            await interaction.followUp(
-                '❌ GASへの送信中にエラーが発生しました。GAS_WEBHOOK_URLを確認してください。'
-            ).catch(() => {});
-        }
-    })();
-}
-
-// --- スラッシュコマンドの定義 (全13コマンド) ---
+// --- スラッシュコマンドの定義 (全12コマンド) ---
 const commands = [
     // 1. 認証パネル作成
     new SlashCommandBuilder()
@@ -275,28 +170,16 @@ const commands = [
     // 12. ヘルプ
     new SlashCommandBuilder()
         .setName('help')
-        .setDescription('コマンドの一覧と詳細を表示します'),
-
-    // 13. ★ チャットログエクスポート (新規追加)
-    new SlashCommandBuilder()
-        .setName('exportlog')
-        .setDescription('指定チャンネルのテキストログを取得してGoogleドキュメントにまとめます')
-        .addChannelOption(o =>
-            o.setName('channel')
-                .setDescription('ログを取得するチャンネル（必須）')
-                .setRequired(true)
-        )
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator)
-
+        .setDescription('コマンドの一覧と詳細を表示します')
 ].map(c => c.toJSON());
 
 // --- Bot 起動イベント ---
 client.once(Events.ClientReady, async () => {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-
+    
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('--- All 13 Commands Registered ---');
+        console.log('--- All 12 Commands Registered ---');
     } catch (error) {
         console.error(error);
     }
@@ -308,7 +191,7 @@ client.once(Events.ClientReady, async () => {
             { type: ActivityType.Custom }
         );
     }, 15000);
-
+    
     console.log(`Logged in as ${client.user.tag}`);
 });
 
@@ -337,10 +220,10 @@ client.on(Events.InteractionCreate, async interaction => {
                         channelId: channel.id,
                         guildName: interaction.guild.name
                     });
-
+                    
                     const isUpdate = logDoc.exists && logDoc.data().channelId !== channel.id;
-                    const replyMsg = isUpdate
-                        ? `🔄 以前の設定を解除し、ログ送信先を ${channel} に更新しました。`
+                    const replyMsg = isUpdate 
+                        ? `🔄 以前の設定を解除し、ログ送信先を ${channel} に更新しました。` 
                         : `✅ ログ送信先を ${channel} に設定しました。`;
 
                     await interaction.editReply(replyMsg);
@@ -348,7 +231,7 @@ client.on(Events.InteractionCreate, async interaction => {
                     return;
                 } else {
                     if (!logDoc.exists) return await interaction.editReply('❌ 現在、ログ設定は登録されていません。');
-
+                    
                     await db.collection('log_settings').doc(interaction.guild.id).delete();
                     return await interaction.editReply('🗑️ ログの設定を解除しました。');
                 }
@@ -358,6 +241,7 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // /verify コマンド
+        // 修正: タイトル・説明が入力されていればそれを使い、なければデフォルト文言を使う
         if (commandName === 'verify') {
             const role = options.getRole('role');
             const title = options.getString('title') ?? '認証パネル';
@@ -376,7 +260,7 @@ client.on(Events.InteractionCreate, async interaction => {
             );
 
             await interaction.reply({ embeds: [embed], components: [row] });
-            sendCommandLog(interaction, commandName);
+            sendCommandLog(interaction, commandName); // fire-and-forget
             return;
         }
 
@@ -397,6 +281,7 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // /ticket コマンド
+        // 修正: タイトル・説明が入力されていればそれを使い、なければデフォルト文言を使う
         if (commandName === 'ticket') {
             const adminRole = options.getRole('admin-role');
             const key = `t_${Date.now()}`;
@@ -423,7 +308,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (['give-role', 'remove-role'].includes(commandName)) {
             const member = options.getMember('target');
             const role = options.getRole('role');
-
+            
             try {
                 if (commandName === 'give-role') {
                     await member.roles.add(role);
@@ -487,6 +372,7 @@ client.on(Events.InteractionCreate, async interaction => {
             if (commandName === 'broadcast') {
                 broadcastRoleMap.set(interaction.user.id, options.getRole('target-role').id);
 
+                // /broadcast モーダル: 発言者・内容・URLの3欄
                 const modal = new ModalBuilder()
                     .setCustomId('broadcast_modal')
                     .setTitle('ロール宛て一斉DM');
@@ -516,10 +402,11 @@ client.on(Events.InteractionCreate, async interaction => {
                 );
 
                 await interaction.showModal(modal);
-                sendCommandLog(interaction, commandName);
+                sendCommandLog(interaction, commandName); // showModal後にfire-and-forget
                 return;
             }
 
+            // /notice モーダル (変更なし)
             const modal = new ModalBuilder()
                 .setCustomId('notice_modal')
                 .setTitle('お知らせ一斉DM');
@@ -535,7 +422,7 @@ client.on(Events.InteractionCreate, async interaction => {
             );
 
             await interaction.showModal(modal);
-            sendCommandLog(interaction, commandName);
+            sendCommandLog(interaction, commandName); // showModal後にfire-and-forget
             return;
         }
 
@@ -552,7 +439,7 @@ client.on(Events.InteractionCreate, async interaction => {
             );
 
             await interaction.showModal(modal);
-            sendCommandLog(interaction, commandName);
+            sendCommandLog(interaction, commandName); // showModal後にfire-and-forget
             return;
         }
 
@@ -565,8 +452,7 @@ client.on(Events.InteractionCreate, async interaction => {
                     { label: '/verify (認証)', value: 'h_verify' },
                     { label: '/ticket (サポート)', value: 'h_ticket' },
                     { label: '/log (管理ログ)', value: 'h_log' },
-                    { label: '/role-confirmation (確認)', value: 'h_role' },
-                    { label: '/exportlog (ログエクスポート)', value: 'h_exportlog' }
+                    { label: '/role-confirmation (確認)', value: 'h_role' }
                 ]);
 
             await interaction.reply({
@@ -575,33 +461,6 @@ client.on(Events.InteractionCreate, async interaction => {
                 flags: MessageFlags.Ephemeral
             });
             sendCommandLog(interaction, commandName);
-            return;
-        }
-
-        // ============================================================
-        // /exportlog コマンド (新規追加)
-        // ============================================================
-        if (commandName === 'exportlog') {
-            // Ephemeral なし → コマンド実行CHに全員が見える形で返信
-            await interaction.deferReply();
-
-            // 取得対象チャンネル（channel オプションで指定、必須）
-            const targetChannel = options.getChannel('channel');
-
-            // テキストチャンネルかどうかチェック
-            if (targetChannel.type !== ChannelType.GuildText) {
-                return await interaction.editReply('❌ テキストチャンネルのみ対応しています。');
-            }
-
-            // 環境変数チェック
-            if (!process.env.GAS_WEBHOOK_URL) {
-                return await interaction.editReply('❌ GAS_WEBHOOK_URLが設定されていません。環境変数を確認してください。');
-            }
-
-            sendCommandLog(interaction, commandName); // fire-and-forget
-
-            // メイン処理
-            await exportChannelLog(targetChannel, interaction);
             return;
         }
     }
@@ -647,6 +506,7 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // ロール宛て一斉DM送信 (/broadcast)
+        // 修正: 発言者・内容・URLの3欄をEmbedにまとめてDM送信
         if (interaction.customId === 'broadcast_modal') {
             const roleId = broadcastRoleMap.get(interaction.user.id);
             if (!roleId) return await interaction.editReply('❌ セッションが切れました。もう一度コマンドからやり直してください。');
@@ -677,7 +537,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 try {
                     await m.send({ embeds: [dmEmbed] });
                     count++;
-                    await new Promise(r => setTimeout(r, 800));
+                    await new Promise(r => setTimeout(r, 800)); // レートリミット対策
                 } catch (e) {}
             }
             return await interaction.editReply(`✅ 指定ロールのメンバー ${count} 名にDMを送信しました。`);
@@ -742,6 +602,8 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // チケット作成ボタン
+        // 修正: チャンネル名を 🎫｜[username] に変更
+        // 修正: 送信メッセージを指定フォーマットに変更（panel-descがあれば置き換え）
         if (customId.startsWith('tkt_')) {
             const parts = customId.split('_');
             const adminRoleId = parts[1];
@@ -759,6 +621,7 @@ client.on(Events.InteractionCreate, async interaction => {
                     ]
                 });
 
+                // panel-descが設定されていればそれを使用、なければデフォルトの案内文
                 const customDesc = ticketMessages.get(key);
                 const panelDesc = customDesc !== null && customDesc !== undefined
                     ? customDesc
@@ -805,7 +668,7 @@ client.on(Events.InteractionCreate, async interaction => {
         // チケットを閉じるボタン
         if (customId === 't_close') {
             await interaction.reply({ content: 'チケットを2秒後に削除します...', flags: MessageFlags.Ephemeral });
-
+            
             const logEmbed = new EmbedBuilder()
                 .setTitle('🔒 チケット終了ログ')
                 .addFields(
@@ -846,7 +709,6 @@ client.on(Events.InteractionCreate, async interaction => {
             if (value === 'h_ticket') helpText = '**/ticket**\nチャンネル管理権限が必要です。ユーザー個別の問い合わせ用プライベートチャンネルを開設するパネルを設置します。';
             if (value === 'h_log') helpText = '**/log**\n管理者権限が必要です。認証や一括削除のアクションが行われた際に送信されるログチャンネルの指定・解除を行います。';
             if (value === 'h_role') helpText = '**/role-confirmation**\nモデレーター権限が必要です。対象のユーザーが現在持っている全ロールの一覧を表示します。';
-            if (value === 'h_exportlog') helpText = '**/exportlog**\n管理者権限が必要です。指定チャンネル（省略時は現在のCH）の全メッセージをTXT化し、GASを経由してGeminiで要約・整形してGoogleドキュメントに書き出します。';
 
             return await interaction.update({ content: `📜 **ヘルプ詳細**\n\n${helpText}`, components: [interaction.message.components[0]] });
         }
