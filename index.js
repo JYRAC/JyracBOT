@@ -16,11 +16,15 @@ const {
     ModalBuilder,
     TextInputBuilder,
     TextInputStyle,
-    Events
+    Events,
+    AttachmentBuilder,
+    PermissionFlagsBits,
 } = require('discord.js');
 
 const express = require('express');
 const admin = require('firebase-admin');
+const fs = require('fs');
+const path = require('path');
 
 // --- Firebase 初期化 (設定・通知保存用) ---
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -84,7 +88,110 @@ const activities = [
     "広告募集中"
 ];
 
-// --- スラッシュコマンドの定義 (全12コマンド) ---
+// ─── エクスポート用ユーティリティ ──────────────────────────────
+
+/**
+ * Discord APIの100件制限を超えて全メッセージを取得する
+ */
+async function fetchAllMessages(channel, { limit = null, before, after } = {}) {
+    const messages = [];
+    let lastId = before || null;
+    // limit が null の場合は無制限（全件取得）
+    const unlimited = limit === null;
+
+    while (unlimited || messages.length < limit) {
+        const remaining = unlimited ? 100 : Math.min(limit - messages.length, 100);
+        const options = { limit: remaining };
+        if (lastId) options.before = lastId;
+        if (after && messages.length === 0) options.after = after;
+
+        const batch = await channel.messages.fetch(options);
+        if (batch.size === 0) break;
+
+        const sorted = [...batch.values()].sort(
+            (a, b) => a.createdTimestamp - b.createdTimestamp
+        );
+        messages.unshift(...sorted);
+
+        lastId = batch.last().id;
+
+        if (batch.size < remaining) break;
+    }
+
+    if (after) {
+        const afterMsg = messages.find((m) => m.id === after);
+        const afterIndex = afterMsg ? messages.indexOf(afterMsg) + 1 : 0;
+        const sliced = messages.slice(afterIndex);
+        return unlimited ? sliced : sliced.slice(0, limit);
+    }
+
+    return unlimited ? messages : messages.slice(0, limit);
+}
+
+/**
+ * メッセージ一覧をテキスト形式に整形する
+ */
+function formatMessagesToText(messages, channel, guild) {
+    const lines = [];
+    const now = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+
+    lines.push('='.repeat(60));
+    lines.push('Discord チャンネルエクスポート');
+    lines.push('='.repeat(60));
+    lines.push(`サーバー   : ${guild.name}`);
+    lines.push(`チャンネル : #${channel.name}`);
+    lines.push(`取得件数   : ${messages.length} 件`);
+    lines.push(`エクスポート日時: ${now} (JST)`);
+    lines.push('='.repeat(60));
+    lines.push('');
+
+    for (const msg of messages) {
+        const ts = msg.createdAt.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+        const author = msg.author.username;
+        const tag = msg.author.discriminator && msg.author.discriminator !== '0'
+            ? `#${msg.author.discriminator}`
+            : '';
+
+        lines.push(`[${ts}] ${author}${tag}`);
+
+        if (msg.content) lines.push(msg.content);
+
+        if (msg.attachments.size > 0) {
+            msg.attachments.forEach((att) => {
+                lines.push(`[添付ファイル] ${att.name}: ${att.url}`);
+            });
+        }
+
+        if (msg.embeds.length > 0) {
+            msg.embeds.forEach((embed) => {
+                if (embed.title) lines.push(`[Embed タイトル] ${embed.title}`);
+                if (embed.description) lines.push(`[Embed 説明] ${embed.description}`);
+                if (embed.url) lines.push(`[Embed URL] ${embed.url}`);
+            });
+        }
+
+        if (msg.reactions.cache.size > 0) {
+            const reactions = msg.reactions.cache
+                .map((r) => `${r.emoji.name}×${r.count}`)
+                .join('  ');
+            lines.push(`[リアクション] ${reactions}`);
+        }
+
+        if (msg.reference?.messageId) {
+            lines.push(`[返信先 ID] ${msg.reference.messageId}`);
+        }
+
+        lines.push('');
+    }
+
+    lines.push('='.repeat(60));
+    lines.push('エクスポート終了');
+    lines.push('='.repeat(60));
+
+    return lines.join('\n');
+}
+
+// --- スラッシュコマンドの定義 (全13コマンド) ---
 const commands = [
     // 1. 認証パネル作成
     new SlashCommandBuilder()
@@ -170,7 +277,35 @@ const commands = [
     // 12. ヘルプ
     new SlashCommandBuilder()
         .setName('help')
-        .setDescription('コマンドの一覧と詳細を表示します')
+        .setDescription('コマンドの一覧と詳細を表示します'),
+
+    // 13. チャンネルエクスポート ★追加
+    new SlashCommandBuilder()
+        .setName('export')
+        .setDescription('チャンネルのメッセージをテキストファイルにエクスポートします')
+        .addChannelOption(o =>
+            o.setName('channel')
+                .setDescription('エクスポートするチャンネル（省略時: 現在のチャンネル）')
+                .setRequired(false)
+        )
+        .addIntegerOption(o =>
+            o.setName('limit')
+                .setDescription('取得するメッセージ数（省略時: チャンネル全件）')
+                .setMinValue(1)
+                .setRequired(false)
+        )
+        .addStringOption(o =>
+            o.setName('before')
+                .setDescription('このメッセージID以前のメッセージを取得')
+                .setRequired(false)
+        )
+        .addStringOption(o =>
+            o.setName('after')
+                .setDescription('このメッセージID以降のメッセージを取得')
+                .setRequired(false)
+        )
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
+
 ].map(c => c.toJSON());
 
 // --- Bot 起動イベント ---
@@ -179,7 +314,7 @@ client.once(Events.ClientReady, async () => {
     
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('--- All 12 Commands Registered ---');
+        console.log('--- All 13 Commands Registered ---');
     } catch (error) {
         console.error(error);
     }
@@ -241,7 +376,6 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // /verify コマンド
-        // 修正: タイトル・説明が入力されていればそれを使い、なければデフォルト文言を使う
         if (commandName === 'verify') {
             const role = options.getRole('role');
             const title = options.getString('title') ?? '認証パネル';
@@ -260,7 +394,7 @@ client.on(Events.InteractionCreate, async interaction => {
             );
 
             await interaction.reply({ embeds: [embed], components: [row] });
-            sendCommandLog(interaction, commandName); // fire-and-forget
+            sendCommandLog(interaction, commandName);
             return;
         }
 
@@ -281,7 +415,6 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // /ticket コマンド
-        // 修正: タイトル・説明が入力されていればそれを使い、なければデフォルト文言を使う
         if (commandName === 'ticket') {
             const adminRole = options.getRole('admin-role');
             const key = `t_${Date.now()}`;
@@ -372,7 +505,6 @@ client.on(Events.InteractionCreate, async interaction => {
             if (commandName === 'broadcast') {
                 broadcastRoleMap.set(interaction.user.id, options.getRole('target-role').id);
 
-                // /broadcast モーダル: 発言者・内容・URLの3欄
                 const modal = new ModalBuilder()
                     .setCustomId('broadcast_modal')
                     .setTitle('ロール宛て一斉DM');
@@ -402,11 +534,10 @@ client.on(Events.InteractionCreate, async interaction => {
                 );
 
                 await interaction.showModal(modal);
-                sendCommandLog(interaction, commandName); // showModal後にfire-and-forget
+                sendCommandLog(interaction, commandName);
                 return;
             }
 
-            // /notice モーダル (変更なし)
             const modal = new ModalBuilder()
                 .setCustomId('notice_modal')
                 .setTitle('お知らせ一斉DM');
@@ -422,7 +553,7 @@ client.on(Events.InteractionCreate, async interaction => {
             );
 
             await interaction.showModal(modal);
-            sendCommandLog(interaction, commandName); // showModal後にfire-and-forget
+            sendCommandLog(interaction, commandName);
             return;
         }
 
@@ -439,7 +570,7 @@ client.on(Events.InteractionCreate, async interaction => {
             );
 
             await interaction.showModal(modal);
-            sendCommandLog(interaction, commandName); // showModal後にfire-and-forget
+            sendCommandLog(interaction, commandName);
             return;
         }
 
@@ -452,7 +583,8 @@ client.on(Events.InteractionCreate, async interaction => {
                     { label: '/verify (認証)', value: 'h_verify' },
                     { label: '/ticket (サポート)', value: 'h_ticket' },
                     { label: '/log (管理ログ)', value: 'h_log' },
-                    { label: '/role-confirmation (確認)', value: 'h_role' }
+                    { label: '/role-confirmation (確認)', value: 'h_role' },
+                    { label: '/export (チャンネルエクスポート)', value: 'h_export' },
                 ]);
 
             await interaction.reply({
@@ -461,6 +593,72 @@ client.on(Events.InteractionCreate, async interaction => {
                 flags: MessageFlags.Ephemeral
             });
             sendCommandLog(interaction, commandName);
+            return;
+        }
+
+        // /export コマンド ★追加
+        if (commandName === 'export') {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+            const targetChannel = options.getChannel('channel') || interaction.channel;
+            const limit = options.getInteger('limit') ?? null; // null = 全件取得
+            const before = options.getString('before') || undefined;
+            const after = options.getString('after') || undefined;
+
+            if (!targetChannel.isTextBased()) {
+                return interaction.editReply('❌ テキストチャンネルのみエクスポート可能です。');
+            }
+
+            const perms = targetChannel.permissionsFor(interaction.guild.members.me);
+            if (!perms.has(PermissionFlagsBits.ReadMessageHistory)) {
+                return interaction.editReply('❌ Botにメッセージ履歴の読み取り権限がありません。');
+            }
+
+            try {
+                const limitLabel = limit !== null ? `最大 ${limit} 件` : '全件'; await interaction.editReply(`⏳ **#${targetChannel.name}** のメッセージを取得中... (${limitLabel})`);
+
+                const messages = await fetchAllMessages(targetChannel, { limit, before, after });
+
+                if (messages.length === 0) {
+                    return interaction.editReply('⚠️ 取得できるメッセージがありませんでした。');
+                }
+
+                const text = formatMessagesToText(messages, targetChannel, interaction.guild);
+
+                const tmpDir = '/tmp/discord-export';
+                if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+                const filename = `export_${targetChannel.name}_${Date.now()}.txt`;
+                const filepath = path.join(tmpDir, filename);
+                fs.writeFileSync(filepath, text, 'utf-8');
+
+                const attachment = new AttachmentBuilder(filepath, { name: filename });
+
+                await interaction.editReply({
+                    content: `✅ **#${targetChannel.name}** から **${messages.length} 件**のメッセージをエクスポートしました。`,
+                    files: [attachment],
+                });
+
+                fs.unlinkSync(filepath);
+
+                // ログ送信
+                const logEmbed = new EmbedBuilder()
+                    .setTitle('📤 エクスポートログ')
+                    .addFields(
+                        { name: '使用者', value: `${interaction.user}`, inline: true },
+                        { name: '使用コマンド', value: '/export', inline: true },
+                        { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
+                        { name: 'チャンネル', value: `${targetChannel}`, inline: true },
+                        { name: '取得件数', value: `${messages.length} 件`, inline: true }
+                    )
+                    .setColor(0x1ABC9C)
+                    .setTimestamp();
+                sendLog(interaction.guild, logEmbed);
+
+            } catch (err) {
+                console.error('エクスポートエラー:', err);
+                await interaction.editReply(`❌ エラーが発生しました: \`${err.message}\``);
+            }
             return;
         }
     }
@@ -506,7 +704,6 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // ロール宛て一斉DM送信 (/broadcast)
-        // 修正: 発言者・内容・URLの3欄をEmbedにまとめてDM送信
         if (interaction.customId === 'broadcast_modal') {
             const roleId = broadcastRoleMap.get(interaction.user.id);
             if (!roleId) return await interaction.editReply('❌ セッションが切れました。もう一度コマンドからやり直してください。');
@@ -537,7 +734,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 try {
                     await m.send({ embeds: [dmEmbed] });
                     count++;
-                    await new Promise(r => setTimeout(r, 800)); // レートリミット対策
+                    await new Promise(r => setTimeout(r, 800));
                 } catch (e) {}
             }
             return await interaction.editReply(`✅ 指定ロールのメンバー ${count} 名にDMを送信しました。`);
@@ -602,8 +799,6 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // チケット作成ボタン
-        // 修正: チャンネル名を 🎫｜[username] に変更
-        // 修正: 送信メッセージを指定フォーマットに変更（panel-descがあれば置き換え）
         if (customId.startsWith('tkt_')) {
             const parts = customId.split('_');
             const adminRoleId = parts[1];
@@ -621,7 +816,6 @@ client.on(Events.InteractionCreate, async interaction => {
                     ]
                 });
 
-                // panel-descが設定されていればそれを使用、なければデフォルトの案内文
                 const customDesc = ticketMessages.get(key);
                 const panelDesc = customDesc !== null && customDesc !== undefined
                     ? customDesc
@@ -709,6 +903,7 @@ client.on(Events.InteractionCreate, async interaction => {
             if (value === 'h_ticket') helpText = '**/ticket**\nチャンネル管理権限が必要です。ユーザー個別の問い合わせ用プライベートチャンネルを開設するパネルを設置します。';
             if (value === 'h_log') helpText = '**/log**\n管理者権限が必要です。認証や一括削除のアクションが行われた際に送信されるログチャンネルの指定・解除を行います。';
             if (value === 'h_role') helpText = '**/role-confirmation**\nモデレーター権限が必要です。対象のユーザーが現在持っている全ロールの一覧を表示します。';
+            if (value === 'h_export') helpText = '**/export**\nメッセージ管理権限が必要です。指定したチャンネルのメッセージを.txtファイルにエクスポートします。\nオプション: `channel` `limit(1〜10000)` `before` `after`';
 
             return await interaction.update({ content: `📜 **ヘルプ詳細**\n\n${helpText}`, components: [interaction.message.components[0]] });
         }
