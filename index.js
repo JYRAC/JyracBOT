@@ -266,7 +266,7 @@ async function buildMapAttachment(lat, lon) {
         .map(({ gx, gy, buf }) => ({ input: buf, left: gx * TILE, top: gy * TILE }));
 
     // 震源地の絶対ピクセル座標（5×5キャンバス内）
-    // 中心タイルは (HALF, HALF) の位置にある
+    // 中心タイルは (HALF, HALF) の位置にあるため、そこにタイル内オフセットを足す
     const markerAbsX = HALF * TILE + markerPixX;
     const markerAbsY = HALF * TILE + markerPixY;
 
@@ -288,11 +288,11 @@ async function buildMapAttachment(lat, lon) {
         top:  Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsY - h))),
     });
 
-    // 出力サイズ（Discord Embed の推奨比率 16:9 に近い横長）
-    const OUT_W = 800, OUT_H = 400;
+    // 出力サイズ（ご希望の「縦4×横5」の比率に設定）
+    const OUT_W = 500, OUT_H = 400; // 横500px, 縦400px (5:4)
 
     // 震源地を中心にクロップする領域を計算
-    // キャンバス内に収まるようにクランプ
+    // OUT_W / 2 を引くことで、震源地(markerAbsX/Y)が画像のど真ん中になります
     const cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, Math.floor(markerAbsX - OUT_W / 2)));
     const cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, Math.floor(markerAbsY - OUT_H / 2)));
 
@@ -305,7 +305,6 @@ async function buildMapAttachment(lat, lon) {
         .png()
         .toBuffer();
 }
-
 /**
  * JST形式 "YYYY/MM/DD HH:mm:ss" → Unix秒 に変換
  */
