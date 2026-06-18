@@ -237,7 +237,7 @@ async function fetchGSITile(zoom, x, y) {
 async function buildMapAttachment(lat, lon) {
     if (lat == null || lon == null || lat === -200 || lon === -200) return null;
 
-    const zoom = 7;   // zoom=6だと1タイルが広すぎて中国が映るためzoom=7を使用
+    const zoom = 9;   // zoom=6だと1タイルが広すぎて中国が映るためzoom=7を使用
     const TILE = 256;
     const HALF = 1;                  // 中心タイルから上下左右1枚 = 3×3
     const GRID = HALF * 2 + 1;      // 3
