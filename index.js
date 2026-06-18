@@ -239,26 +239,29 @@ async function buildMapAttachment(lat, lon) {
 
     const zoom = 6;
     const TILE = 256;
-    const HALF = 2;            
-    const GRID = HALF * 2 + 1; 
+    const HALF = 2; // 5x5タイル
+    const GRID = HALF * 2 + 1;
 
+    // 震源地のタイル座標とピクセル位置
     const { tileX: cx, tileY: cy, pixX: markerPixX, pixY: markerPixY }
         = latLonToTileAndPixel(lat, lon, zoom);
 
-    // 震源地の絶対ピクセル座標（1280x1280キャンバス内）
+    // 震源地が絶対キャンバス内のどこにあるか (1280x1280基準)
     const markerAbsX = HALF * TILE + markerPixX;
     const markerAbsY = HALF * TILE + markerPixY;
 
-    // 出力サイズ（横500px, 縦400px）
-    const OUT_W = 500, OUT_H = 400;
+    // 出力サイズ (5:4比率)
+    const OUT_W = 500;
+    const OUT_H = 400;
 
-    // クロップ領域の計算：震源地(markerAbsX, markerAbsY)を中央に置く
-    // つまり、左上は「震源地 - サイズの半分」
+    // 震源地を中心にするための切り抜き開始座標
     let cropLeft = Math.floor(markerAbsX - OUT_W / 2);
     let cropTop  = Math.floor(markerAbsY - OUT_H / 2);
 
-    // キャンバス外にはみ出さないよう調整
+    // 5x5タイルの合計サイズ
     const canvasSize = TILE * GRID;
+
+    // キャンバス外にはみ出さないよう制限
     cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, cropLeft));
     cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, cropTop));
 
@@ -266,25 +269,19 @@ async function buildMapAttachment(lat, lon) {
     const fetches = [];
     for (let dy = -HALF; dy <= HALF; dy++) {
         for (let dx = -HALF; dx <= HALF; dx++) {
-            const gx = dx + HALF;
-            const gy = dy + HALF;
             fetches.push(
                 fetchGSITile(zoom, cx + dx, cy + dy)
-                    .then(buf => ({ gx, gy, buf }))
+                    .then(buf => ({ left: (dx + HALF) * TILE, top: (dy + HALF) * TILE, buf }))
                     .catch(() => null)
             );
         }
     }
     const tiles = await Promise.all(fetches);
 
-    const composites = tiles
-        .filter(t => t !== null)
-        .map(({ gx, gy, buf }) => ({ input: buf, left: gx * TILE, top: gy * TILE }));
-
-    // 赤✕ SVG（マーカー）
+    // マーカーSVG
     const ARM = 16, SW = 5, PAD = 12;
-    const sz  = (ARM + PAD) * 2;
-    const h   = sz / 2;
+    const sz = (ARM + PAD) * 2;
+    const h = sz / 2;
     const markerSvg = Buffer.from(
         `<svg width="${sz}" height="${sz}" xmlns="http://www.w3.org/2000/svg">` +
         `<line x1="${h-ARM}" y1="${h-ARM}" x2="${h+ARM}" y2="${h+ARM}" stroke="white" stroke-width="${SW+4}" stroke-linecap="round"/>` +
@@ -293,21 +290,27 @@ async function buildMapAttachment(lat, lon) {
         `<line x1="${h+ARM}" y1="${h-ARM}" x2="${h-ARM}" y2="${h+ARM}" stroke="#EE0000" stroke-width="${SW}" stroke-linecap="round"/>` +
         `</svg>`
     );
+
+    // コンポジット合成
+    const composites = tiles
+        .filter(t => t !== null)
+        .map(t => ({ input: t.buf, left: t.left, top: t.top }));
+    
     composites.push({
         input: markerSvg,
         left: Math.floor(markerAbsX - h),
-        top:  Math.floor(markerAbsY - h),
+        top: Math.floor(markerAbsY - h)
     });
 
     return await sharp({
-        create: { width: canvasSize, height: canvasSize, channels: 4,
-                  background: { r: 220, g: 220, b: 220, alpha: 1 } }
+        create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 220, g: 220, b: 220, alpha: 1 } }
     })
         .composite(composites)
         .extract({ left: cropLeft, top: cropTop, width: OUT_W, height: OUT_H })
         .png()
         .toBuffer();
 }
+
 /**
  * JST形式 "YYYY/MM/DD HH:mm:ss" → Unix秒 に変換
  */
