@@ -237,17 +237,17 @@ async function fetchGSITile(zoom, x, y) {
 async function buildMapAttachment(lat, lon) {
     if (lat == null || lon == null || lat === -200 || lon === -200) return null;
 
-    // 拡大率の調整：日本周辺を見やすくするため zoom = 7 程度に設定
-    const zoom = 7; 
+    // ズームレベルを「7」から「8」に上げました（これで日本国内の詳細度がアップします）
+    const zoom = 8; 
     const TILE = 256;
     
     // 震源地のタイル座標とピクセル位置を計算
     const { tileX: cx, tileY: cy, pixX: markerPixX, pixY: markerPixY }
         = latLonToTileAndPixel(lat, lon, zoom);
 
-    // 今回は震源地を中心とした3x3（768x768px）のタイル範囲を取得
-    const HALF = 1; 
-    const GRID = 3; 
+    // 取得する範囲を「3x3」から「5x5」に戻します（ズームを上げた分、広い範囲を取らないと日本地図が途切れるため）
+    const HALF = 2; 
+    const GRID = 5; 
 
     const fetches = [];
     for (let dy = -HALF; dy <= HALF; dy++) {
@@ -261,25 +261,25 @@ async function buildMapAttachment(lat, lon) {
     }
     const tiles = await Promise.all(fetches);
 
-    // 全体キャンバスサイズ
-    const canvasSize = TILE * GRID; // 768x768
+    // キャンバスサイズ（5x5枚で1280x1280px）
+    const canvasSize = TILE * GRID;
     
-    // 震源地の絶対キャンバス内の座標
+    // 震源地の絶対座標
     const markerAbsX = HALF * TILE + markerPixX;
     const markerAbsY = HALF * TILE + markerPixY;
 
-    // 出力サイズ：縦4:横5（横500px, 縦400px）
+    // 出力サイズ：縦4:横5 (500x400)
     const OUT_W = 500, OUT_H = 400;
 
-    // 震源地を中心にする切り抜き開始座標
+    // 震源地を中心に切り抜き（ここが一番重要です）
     let cropLeft = Math.floor(markerAbsX - OUT_W / 2);
     let cropTop  = Math.floor(markerAbsY - OUT_H / 2);
 
-    // キャンバス外にはみ出さないよう制限
+    // 境界チェック（画像端でズレるのを防ぐ）
     cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, cropLeft));
     cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, cropTop));
 
-    // マーカーSVG
+    // マーカーSVGの設定
     const ARM = 16, SW = 5, PAD = 12;
     const sz = (ARM + PAD) * 2;
     const h = sz / 2;
