@@ -25,6 +25,7 @@ const express = require('express');
 const admin = require('firebase-admin');
 const fs = require('fs');
 const path = require('path');
+const WebSocket = require('ws'); // ← 追加 (npm install ws)
 
 // --- Firebase 初期化 (設定・通知保存用) ---
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -96,7 +97,6 @@ const activities = [
 async function fetchAllMessages(channel, { limit = null, before, after } = {}) {
     const messages = [];
     let lastId = before || null;
-    // limit が null の場合は無制限（全件取得）
     const unlimited = limit === null;
 
     while (unlimited || messages.length < limit) {
@@ -191,7 +191,125 @@ function formatMessagesToText(messages, channel, guild) {
     return lines.join('\n');
 }
 
-// --- スラッシュコマンドの定義 (全13コマンド) ---
+// ─── 地震通知モジュール ────────────────────────────────────────
+
+const INTENSITY_LABEL = {
+    '10': '1', '20': '2', '30': '3', '40': '4',
+    '45': '5弱', '50': '5強', '55': '6弱', '60': '6強', '70': '7',
+};
+
+const INTENSITY_COLOR = {
+    '1': 0x99CCFF, '2': 0x00AAFF, '3': 0x00DD00, '4': 0xFFFF00,
+    '5弱': 0xFFAA00, '5強': 0xFF6600, '6弱': 0xFF2200, '6強': 0xCC0000, '7': 0x990000,
+};
+
+function getTsunamiLabel(code) {
+    const labels = {
+        'Unknown': '不明', 'None': 'なし', 'Checking': '調査中',
+        'NonEffective': '若干の海面変動あり（被害なし）',
+        'Watch': '津波注意報', 'Warning': '⚠️ 津波警報', 'MajorWarning': '🚨 大津波警報',
+    };
+    return labels[code] ?? code;
+}
+
+function buildEEWEmbed(data) {
+    const intensity = INTENSITY_LABEL[data.maxIntensity] ?? '不明';
+    const color = INTENSITY_COLOR[intensity] ?? 0xFF0000;
+    return new EmbedBuilder()
+        .setTitle('🚨 緊急地震速報')
+        .setColor(color)
+        .setDescription('**強い揺れに備えてください！**')
+        .addFields(
+            { name: '震源地', value: data.hypocenter?.name ?? '不明', inline: true },
+            { name: '最大予測震度', value: `震度 ${intensity}`, inline: true },
+            { name: 'マグニチュード', value: `M${data.magnitude ?? '不明'}`, inline: true },
+            { name: '深さ', value: data.hypocenter?.depth != null ? `${data.hypocenter.depth} km` : '不明', inline: true },
+            { name: '第N報', value: `第${data.serialNo ?? '?'}報${data.isFinal ? '（最終報）' : ''}`, inline: true },
+        )
+        .setTimestamp(data.originTime ? new Date(data.originTime) : new Date())
+        .setFooter({ text: 'P2P地震情報 | 緊急地震速報' });
+}
+
+function buildQuakeEmbed(data) {
+    const intensity = data.maxScale != null ? (INTENSITY_LABEL[String(data.maxScale)] ?? '不明') : '不明';
+    const color = INTENSITY_COLOR[intensity] ?? 0x5555FF;
+    const embed = new EmbedBuilder()
+        .setTitle('🌏 地震情報')
+        .setColor(color)
+        .addFields(
+            { name: '震源地', value: data.earthquake?.hypocenter?.name ?? '不明', inline: true },
+            { name: '最大震度', value: `震度 ${intensity}`, inline: true },
+            { name: 'マグニチュード', value: data.earthquake?.hypocenter?.magnitude != null ? `M${data.earthquake.hypocenter.magnitude}` : '不明', inline: true },
+            { name: '深さ', value: data.earthquake?.hypocenter?.depth != null ? `${data.earthquake.hypocenter.depth} km` : '不明', inline: true },
+            { name: '発生時刻', value: data.earthquake?.time ? `<t:${Math.floor(new Date(data.earthquake.time).getTime() / 1000)}:F>` : '不明', inline: false },
+        )
+        .setTimestamp()
+        .setFooter({ text: 'P2P地震情報' });
+
+    if (data.tsunami && data.tsunami !== 'None') {
+        embed.addFields({ name: '🌊 津波', value: getTsunamiLabel(data.tsunami), inline: false });
+    }
+    return embed;
+}
+
+/**
+ * 地震通知を開始する
+ * 通知先チャンネルIDは Firestore の earthquake_settings/{guildId} に保存
+ */
+function startEarthquakeMonitor() {
+    const WS_URL = 'wss://ws-api.p2pquake.net/v2/ws';
+    let ws;
+
+    async function getNotifyChannels() {
+        // Firestoreから全サーバーの通知チャンネルを取得
+        const snap = await db.collection('earthquake_settings').get();
+        return snap.docs.map(d => d.data().channelId).filter(Boolean);
+    }
+
+    async function broadcast(embed) {
+        const channelIds = await getNotifyChannels().catch(() => []);
+        for (const channelId of channelIds) {
+            const ch = await client.channels.fetch(channelId).catch(() => null);
+            if (ch) await ch.send({ embeds: [embed] }).catch(console.error);
+        }
+    }
+
+    function connect() {
+        console.log('[地震監視] WebSocket接続中...');
+        ws = new WebSocket(WS_URL);
+
+        ws.on('open', () => console.log('[地震監視] 接続しました'));
+
+        ws.on('message', async (raw) => {
+            let data;
+            try { data = JSON.parse(raw.toString()); } catch { return; }
+
+            if (data.code === 551) {
+                // 緊急地震速報
+                if (data.cancelled) return;
+                await broadcast(buildEEWEmbed(data));
+            } else if (data.code === 556) {
+                // 地震情報
+                await broadcast(buildQuakeEmbed(data));
+            }
+        });
+
+        ws.on('close', (code) => {
+            console.log(`[地震監視] 切断 (${code})。30秒後に再接続します`);
+            setTimeout(connect, 30_000);
+        });
+
+        ws.on('error', (err) => {
+            console.error('[地震監視] エラー:', err.message);
+            ws.close();
+        });
+    }
+
+    connect();
+}
+
+// ─── スラッシュコマンド定義 ────────────────────────────────────
+
 const commands = [
     // 1. 認証パネル作成
     new SlashCommandBuilder()
@@ -279,7 +397,7 @@ const commands = [
         .setName('help')
         .setDescription('コマンドの一覧と詳細を表示します'),
 
-    // 13. チャンネルエクスポート ★追加
+    // 13. チャンネルエクスポート
     new SlashCommandBuilder()
         .setName('export')
         .setDescription('チャンネルのメッセージをテキストファイルにエクスポートします')
@@ -306,15 +424,26 @@ const commands = [
         )
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
 
+    // 14. 地震通知設定 ★追加
+    new SlashCommandBuilder()
+        .setName('earthquake-setup')
+        .setDescription('地震・緊急地震速報の通知チャンネルを設定または解除します')
+        .addChannelOption(o =>
+            o.setName('channel')
+                .setDescription('通知先チャンネル（省略すると設定を解除）')
+                .setRequired(false)
+        )
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
 ].map(c => c.toJSON());
 
 // --- Bot 起動イベント ---
 client.once(Events.ClientReady, async () => {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    
+
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('--- All 13 Commands Registered ---');
+        console.log('--- All 14 Commands Registered ---');
     } catch (error) {
         console.error(error);
     }
@@ -326,7 +455,10 @@ client.once(Events.ClientReady, async () => {
             { type: ActivityType.Custom }
         );
     }, 15000);
-    
+
+    // 地震通知モニター開始 ★追加
+    startEarthquakeMonitor();
+
     console.log(`Logged in as ${client.user.tag}`);
 });
 
@@ -355,10 +487,10 @@ client.on(Events.InteractionCreate, async interaction => {
                         channelId: channel.id,
                         guildName: interaction.guild.name
                     });
-                    
+
                     const isUpdate = logDoc.exists && logDoc.data().channelId !== channel.id;
-                    const replyMsg = isUpdate 
-                        ? `🔄 以前の設定を解除し、ログ送信先を ${channel} に更新しました。` 
+                    const replyMsg = isUpdate
+                        ? `🔄 以前の設定を解除し、ログ送信先を ${channel} に更新しました。`
                         : `✅ ログ送信先を ${channel} に設定しました。`;
 
                     await interaction.editReply(replyMsg);
@@ -366,7 +498,7 @@ client.on(Events.InteractionCreate, async interaction => {
                     return;
                 } else {
                     if (!logDoc.exists) return await interaction.editReply('❌ 現在、ログ設定は登録されていません。');
-                    
+
                     await db.collection('log_settings').doc(interaction.guild.id).delete();
                     return await interaction.editReply('🗑️ ログの設定を解除しました。');
                 }
@@ -441,7 +573,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (['give-role', 'remove-role'].includes(commandName)) {
             const member = options.getMember('target');
             const role = options.getRole('role');
-            
+
             try {
                 if (commandName === 'give-role') {
                     await member.roles.add(role);
@@ -585,6 +717,7 @@ client.on(Events.InteractionCreate, async interaction => {
                     { label: '/log (管理ログ)', value: 'h_log' },
                     { label: '/role-confirmation (確認)', value: 'h_role' },
                     { label: '/export (チャンネルエクスポート)', value: 'h_export' },
+                    { label: '/earthquake-setup (地震通知設定)', value: 'h_earthquake' }, // ★追加
                 ]);
 
             await interaction.reply({
@@ -596,12 +729,12 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /export コマンド ★追加
+        // /export コマンド
         if (commandName === 'export') {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
             const targetChannel = options.getChannel('channel') || interaction.channel;
-            const limit = options.getInteger('limit') ?? null; // null = 全件取得
+            const limit = options.getInteger('limit') ?? null;
             const before = options.getString('before') || undefined;
             const after = options.getString('after') || undefined;
 
@@ -615,7 +748,8 @@ client.on(Events.InteractionCreate, async interaction => {
             }
 
             try {
-                const limitLabel = limit !== null ? `最大 ${limit} 件` : '全件'; await interaction.editReply(`⏳ **#${targetChannel.name}** のメッセージを取得中... (${limitLabel})`);
+                const limitLabel = limit !== null ? `最大 ${limit} 件` : '全件';
+                await interaction.editReply(`⏳ **#${targetChannel.name}** のメッセージを取得中... (${limitLabel})`);
 
                 const messages = await fetchAllMessages(targetChannel, { limit, before, after });
 
@@ -641,7 +775,6 @@ client.on(Events.InteractionCreate, async interaction => {
 
                 fs.unlinkSync(filepath);
 
-                // ログ送信
                 const logEmbed = new EmbedBuilder()
                     .setTitle('📤 エクスポートログ')
                     .addFields(
@@ -661,13 +794,43 @@ client.on(Events.InteractionCreate, async interaction => {
             }
             return;
         }
+
+        // /earthquake-setup コマンド ★追加
+        if (commandName === 'earthquake-setup') {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            const channel = options.getChannel('channel');
+            const docRef = db.collection('earthquake_settings').doc(interaction.guild.id);
+
+            if (channel) {
+                await docRef.set({ channelId: channel.id, guildName: interaction.guild.name });
+                await interaction.editReply(`✅ 地震・緊急地震速報の通知先を ${channel} に設定しました。`);
+
+                sendLog(interaction.guild, new EmbedBuilder()
+                    .setTitle('🌏 地震通知設定ログ')
+                    .addFields(
+                        { name: '設定者', value: `${interaction.user}`, inline: true },
+                        { name: '通知先', value: `${channel}`, inline: true },
+                        { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+                    )
+                    .setColor(0xFF6600)
+                    .setTimestamp()
+                );
+            } else {
+                const doc = await docRef.get();
+                if (!doc.exists) return await interaction.editReply('❌ 現在、地震通知は設定されていません。');
+                await docRef.delete();
+                await interaction.editReply('🗑️ 地震通知の設定を解除しました。');
+            }
+
+            sendCommandLog(interaction, commandName);
+            return;
+        }
     }
 
     // 2. モーダル送信の処理
     if (interaction.isModalSubmit()) {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-        // 作成依頼の処理
         if (interaction.customId === 'req_modal') {
             const embed = new EmbedBuilder()
                 .setTitle('📩 新規コマンド作成依頼')
@@ -687,7 +850,6 @@ client.on(Events.InteractionCreate, async interaction => {
             }
         }
 
-        // お知らせDM送信 (/notice)
         if (interaction.customId === 'notice_modal') {
             const textContent = interaction.fields.getTextInputValue('dm_text');
             const subs = await db.collection('subscribers').get();
@@ -703,7 +865,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return await interaction.editReply(`✅ 登録ユーザー ${count} 名にお知らせを送信しました。`);
         }
 
-        // ロール宛て一斉DM送信 (/broadcast)
         if (interaction.customId === 'broadcast_modal') {
             const roleId = broadcastRoleMap.get(interaction.user.id);
             if (!roleId) return await interaction.editReply('❌ セッションが切れました。もう一度コマンドからやり直してください。');
@@ -723,14 +884,12 @@ client.on(Events.InteractionCreate, async interaction => {
                 .setColor(0xE67E22)
                 .setTimestamp();
 
-            if (url) {
-                dmEmbed.addFields({ name: 'URL', value: url });
-            }
+            if (url) dmEmbed.addFields({ name: 'URL', value: url });
 
             const members = (await interaction.guild.members.fetch()).filter(m => m.roles.cache.has(roleId) && !m.user.bot);
             let count = 0;
 
-            for (const [id, m] of members) {
+            for (const [, m] of members) {
                 try {
                     await m.send({ embeds: [dmEmbed] });
                     count++;
@@ -745,7 +904,6 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isButton()) {
         const { customId } = interaction;
 
-        // 認証ボタン
         if (customId.startsWith('v_role_')) {
             const roleId = customId.split('_')[2];
             await interaction.reply({ content: '認証を処理しています...', flags: MessageFlags.Ephemeral });
@@ -771,7 +929,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // 一括削除ボタン
         if (customId.startsWith('bulk_yes_')) {
             const amount = parseInt(customId.split('_')[2]);
             const chName = interaction.channel.name;
@@ -798,7 +955,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // チケット作成ボタン
         if (customId.startsWith('tkt_')) {
             const parts = customId.split('_');
             const adminRoleId = parts[1];
@@ -817,9 +973,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 });
 
                 const customDesc = ticketMessages.get(key);
-                const panelDesc = customDesc !== null && customDesc !== undefined
-                    ? customDesc
-                    : '発行ありがとうございます。担当者が来るのを今しばらくお待ちください。';
+                const panelDesc = customDesc != null ? customDesc : '発行ありがとうございます。担当者が来るのを今しばらくお待ちください。';
 
                 const ticketEmbed = new EmbedBuilder()
                     .setTitle('📋 パネルでチケット発行')
@@ -859,10 +1013,9 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // チケットを閉じるボタン
         if (customId === 't_close') {
             await interaction.reply({ content: 'チケットを2秒後に削除します...', flags: MessageFlags.Ephemeral });
-            
+
             const logEmbed = new EmbedBuilder()
                 .setTitle('🔒 チケット終了ログ')
                 .addFields(
@@ -881,13 +1034,11 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // 通知登録解除ボタン
         if (customId === 'n_rem') {
             await db.collection('subscribers').doc(interaction.user.id).delete();
             return await interaction.update({ content: '🗑️ 通知登録を解除しました。', components: [] });
         }
 
-        // キャンセル・中止ボタン全般
         if (customId === 'bulk_no') {
             return await interaction.update({ content: '操作をキャンセルしました。', components: [] });
         }
@@ -904,6 +1055,8 @@ client.on(Events.InteractionCreate, async interaction => {
             if (value === 'h_log') helpText = '**/log**\n管理者権限が必要です。認証や一括削除のアクションが行われた際に送信されるログチャンネルの指定・解除を行います。';
             if (value === 'h_role') helpText = '**/role-confirmation**\nモデレーター権限が必要です。対象のユーザーが現在持っている全ロールの一覧を表示します。';
             if (value === 'h_export') helpText = '**/export**\nメッセージ管理権限が必要です。指定したチャンネルのメッセージを.txtファイルにエクスポートします。\nオプション: `channel` `limit(1〜10000)` `before` `after`';
+            // ★追加
+            if (value === 'h_earthquake') helpText = '**/earthquake-setup**\nチャンネル管理権限が必要です。地震情報・緊急地震速報をリアルタイムで通知するチャンネルを設定します。\n`channel` を省略すると設定を解除します。\nデータ元: P2P地震情報API';
 
             return await interaction.update({ content: `📜 **ヘルプ詳細**\n\n${helpText}`, components: [interaction.message.components[0]] });
         }
