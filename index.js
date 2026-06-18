@@ -229,42 +229,83 @@ async function fetchGSITile(zoom, x, y) {
 }
 
 /**
- * 国土地理院タイルを 5×5 枚合成し、震源地を画像中央に固定して赤✕マーカーを描画。
- * 震源地ピクセルを中心に OUTPUT_W×OUTPUT_H でクロップしてから出力するため、
- * 震源地が常に画像の真ん中に表示される。
+ * 国土地理院タイルを 3×3 枚合成し、震源地を画像中央にクロップして返す。
+ * zoom=7 を使用することで日本周辺のみが表示される。
+ * 震源地ピクセルを中心に extract() でクロップするため、常に真ん中に✕が表示される。
  * 出典: 国土地理院 地理院タイル (https://maps.gsi.go.jp/development/ichiran.html)
  */
 async function buildMapAttachment(lat, lon) {
     if (lat == null || lon == null || lat === -200 || lon === -200) return null;
 
-    // ズームを8にして、取得範囲を「3x3」に絞ります
-    const zoom = 8; 
+    const zoom = 7;   // zoom=6だと1タイルが広すぎて中国が映るためzoom=7を使用
     const TILE = 256;
-    
-    // 取得する範囲を「3x3」に限定（これで中国側が写りにくくなります）
-    const HALF = 1; 
-    const GRID = 3; 
+    const HALF = 1;                  // 中心タイルから上下左右1枚 = 3×3
+    const GRID = HALF * 2 + 1;      // 3
 
     const { tileX: cx, tileY: cy, pixX: markerPixX, pixY: markerPixY }
         = latLonToTileAndPixel(lat, lon, zoom);
 
+    // 3×3 タイルを並列取得
     const fetches = [];
     for (let dy = -HALF; dy <= HALF; dy++) {
         for (let dx = -HALF; dx <= HALF; dx++) {
+            const gx = dx + HALF; // 0〜2
+            const gy = dy + HALF;
             fetches.push(
                 fetchGSITile(zoom, cx + dx, cy + dy)
-                    .then(buf => ({ left: (dx + HALF) * TILE, top: (dy + HALF) * TILE, buf }))
+                    .then(buf => ({ gx, gy, buf }))
                     .catch(() => null)
             );
         }
     }
     const tiles = await Promise.all(fetches);
 
-    // 全体キャンバスサイズ（3x3なので 768x768px）
-    const canvasSize = TILE * GRID;
-    
-    // 震源地の絶対座標
-    const markerAbsX = HALF ***
+    const canvasSize = TILE * GRID; // 768×768
+
+    const composites = tiles
+        .filter(t => t !== null)
+        .map(({ gx, gy, buf }) => ({ input: buf, left: gx * TILE, top: gy * TILE }));
+
+    // 震源地の絶対ピクセル座標（3×3キャンバス内）
+    const markerAbsX = HALF * TILE + markerPixX;
+    const markerAbsY = HALF * TILE + markerPixY;
+
+    // 赤✕ SVG（白縁取り付き）
+    const ARM = 16, SW = 5, PAD = 12;
+    const sz  = (ARM + PAD) * 2;
+    const h   = sz / 2;
+    const markerSvg = Buffer.from(
+        `<svg width="${sz}" height="${sz}" xmlns="http://www.w3.org/2000/svg">` +
+        `<line x1="${h-ARM}" y1="${h-ARM}" x2="${h+ARM}" y2="${h+ARM}" stroke="white" stroke-width="${SW+4}" stroke-linecap="round"/>` +
+        `<line x1="${h+ARM}" y1="${h-ARM}" x2="${h-ARM}" y2="${h+ARM}" stroke="white" stroke-width="${SW+4}" stroke-linecap="round"/>` +
+        `<line x1="${h-ARM}" y1="${h-ARM}" x2="${h+ARM}" y2="${h+ARM}" stroke="#EE0000" stroke-width="${SW}" stroke-linecap="round"/>` +
+        `<line x1="${h+ARM}" y1="${h-ARM}" x2="${h-ARM}" y2="${h+ARM}" stroke="#EE0000" stroke-width="${SW}" stroke-linecap="round"/>` +
+        `</svg>`
+    );
+    composites.push({
+        input: markerSvg,
+        left: Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsX - h))),
+        top:  Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsY - h))),
+    });
+
+    // 出力サイズ: 800×500 で震源地を中心にクロップ
+    const OUT_W = 800, OUT_H = 500;
+    const cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, Math.floor(markerAbsX - OUT_W / 2)));
+    const cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, Math.floor(markerAbsY - OUT_H / 2)));
+
+    return await sharp({
+        create: { width: canvasSize, height: canvasSize, channels: 4,
+                  background: { r: 220, g: 220, b: 220, alpha: 1 } }
+    })
+        .composite(composites)
+        .extract({ left: cropLeft, top: cropTop, width: OUT_W, height: OUT_H })
+        .png()
+        .toBuffer();
+}
+
+
+
+/**
  * JST形式 "YYYY/MM/DD HH:mm:ss" → Unix秒 に変換
  */
 function jstToUnix(jstStr) {
