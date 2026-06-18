@@ -660,6 +660,35 @@ const commands = [
         )
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 
+    // 15. 疑似地震テスト ★追加
+    new SlashCommandBuilder()
+        .setName('earthquake-test')
+        .setDescription('地震通知の表示テストを行います（管理者専用）')
+        .addStringOption(o =>
+            o.setName('type')
+                .setDescription('通知の種類')
+                .setRequired(true)
+                .addChoices(
+                    { name: '🌏 地震情報', value: 'quake' },
+                    { name: '🚨 緊急地震速報 (EEW)', value: 'eew' },
+                    { name: '🌊 津波予報', value: 'tsunami' },
+                )
+        )
+        .addStringOption(o =>
+            o.setName('location')
+                .setDescription('震源地プリセット')
+                .setRequired(false)
+                .addChoices(
+                    { name: '東京 (東京湾北部)', value: 'tokyo' },
+                    { name: '大阪 (大阪府南部)', value: 'osaka' },
+                    { name: '仙台 (宮城県沖)', value: 'sendai' },
+                    { name: '福岡 (福岡県西方沖)', value: 'fukuoka' },
+                    { name: '北海道 (胆振地方中東部)', value: 'hokkaido' },
+                    { name: '沖縄 (沖縄本島近海)', value: 'okinawa' },
+                )
+        )
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
 ].map(c => c.toJSON());
 
 // --- Bot 起動イベント ---
@@ -668,7 +697,7 @@ client.once(Events.ClientReady, async () => {
 
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('--- All 14 Commands Registered ---');
+        console.log('--- All 15 Commands Registered ---');
     } catch (error) {
         console.error(error);
     }
@@ -942,7 +971,8 @@ client.on(Events.InteractionCreate, async interaction => {
                     { label: '/log (管理ログ)', value: 'h_log' },
                     { label: '/role-confirmation (確認)', value: 'h_role' },
                     { label: '/export (チャンネルエクスポート)', value: 'h_export' },
-                    { label: '/earthquake-setup (地震通知設定)', value: 'h_earthquake' }, // ★追加
+                    { label: '/earthquake-setup (地震通知設定)', value: 'h_earthquake' },
+                    { label: '/earthquake-test (疑似地震テスト)', value: 'h_eqtest' }, // ★追加
                 ]);
 
             await interaction.reply({
@@ -1045,6 +1075,128 @@ client.on(Events.InteractionCreate, async interaction => {
                 if (!doc.exists) return await interaction.editReply('❌ 現在、地震通知は設定されていません。');
                 await docRef.delete();
                 await interaction.editReply('🗑️ 地震通知の設定を解除しました。');
+            }
+
+            sendCommandLog(interaction, commandName);
+            return;
+        }
+
+        // /earthquake-test コマンド ★追加
+        if (commandName === 'earthquake-test') {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+            // 震源地プリセット
+            const LOCATIONS = {
+                tokyo:    { name: '東京湾北部',       lat: 35.6762, lon: 139.6503, mag: 7.3, depth: 40  },
+                osaka:    { name: '大阪府南部',       lat: 34.6937, lon: 135.5023, mag: 6.5, depth: 15  },
+                sendai:   { name: '宮城県沖',         lat: 38.2682, lon: 141.4694, mag: 7.8, depth: 60  },
+                fukuoka:  { name: '福岡県西方沖',     lat: 33.5904, lon: 130.4017, mag: 6.2, depth: 10  },
+                hokkaido: { name: '胆振地方中東部',   lat: 42.6864, lon: 142.0060, mag: 6.7, depth: 37  },
+                okinawa:  { name: '沖縄本島近海',     lat: 26.2124, lon: 127.6792, mag: 5.8, depth: 20  },
+            };
+
+            const locKey = options.getString('location') ?? Object.keys(LOCATIONS)[Math.floor(Math.random() * 6)];
+            const loc = LOCATIONS[locKey];
+            const type = options.getString('type');
+
+            // 疑似データを作成して各 build 関数に渡す
+            let embed;
+            let testLat = loc.lat, testLon = loc.lon;
+
+            if (type === 'quake') {
+                // 地震情報の疑似データ
+                const fakeData = {
+                    earthquake: {
+                        time: new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
+                                        .replace(/\//g, '/').replace(',', ''),
+                        hypocenter: {
+                            name: loc.name,
+                            latitude:  loc.lat,
+                            longitude: loc.lon,
+                            depth:     loc.depth,
+                            magnitude: loc.mag,
+                        },
+                        maxScale: 50, // 震度5強
+                        domesticTsunami: 'None',
+                    },
+                };
+                embed = buildQuakeEmbed(fakeData);
+
+            } else if (type === 'eew') {
+                // EEW の疑似データ
+                const fakeData = {
+                    earthquake: {
+                        originTime: new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
+                                              .replace(/\//g, '/').replace(',', ''),
+                        hypocenter: {
+                            name:      loc.name,
+                            latitude:  loc.lat,
+                            longitude: loc.lon,
+                            depth:     loc.depth,
+                            magnitude: loc.mag,
+                        },
+                    },
+                    issue: { serial: 1 },
+                    areas: [{ scaleFrom: 50 }],
+                    cancelled: false,
+                };
+                embed = buildEEWEmbed(fakeData);
+
+            } else if (type === 'tsunami') {
+                // 津波予報の疑似データ
+                const fakeData = {
+                    cancelled: false,
+                    issue: {
+                        time: new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
+                                        .replace(/\//g, '/').replace(',', ''),
+                        source: '気象庁（テスト）',
+                    },
+                    areas: [
+                        { grade: 'Warning',      name: '三陸沿岸' },
+                        { grade: 'Warning',      name: '福島県' },
+                        { grade: 'Watch',        name: '茨城県' },
+                        { grade: 'Watch',        name: '千葉県外房' },
+                    ],
+                };
+                embed = buildTsunamiEmbed(fakeData, 1);
+                testLat = null; testLon = null; // 津波は地図なし
+            }
+
+            // ★テスト用: 通知チャンネルに送信（設定済みの場合）
+            const snap = await db.collection('earthquake_settings').doc(interaction.guild.id).get();
+            const notifyChannelId = snap.exists ? snap.data().channelId : null;
+
+            // 地図生成
+            let attachment = null;
+            if (testLat != null) {
+                const buf = await buildMapAttachment(testLat, testLon).catch(e => {
+                    console.error('[テスト地図エラー]', e.message);
+                    return null;
+                });
+                if (buf) {
+                    attachment = new AttachmentBuilder(buf, { name: 'map.png' });
+                    embed.setImage('attachment://map.png');
+                }
+            }
+
+            const payload = { embeds: [embed] };
+            if (attachment) payload.files = [attachment];
+
+            if (notifyChannelId) {
+                const notifyCh = await client.channels.fetch(notifyChannelId).catch(() => null);
+                if (notifyCh) {
+                    await notifyCh.send(payload).catch(console.error);
+                    await interaction.editReply(`✅ **#${notifyCh.name}** にテスト通知を送信しました。
+震源: ${loc.name} (${loc.lat}, ${loc.lon})`);
+                } else {
+                    await interaction.editReply('❌ 通知チャンネルを取得できませんでした。');
+                }
+            } else {
+                // 通知チャンネル未設定の場合はコマンド実行チャンネルに送信
+                await interaction.channel.send(payload).catch(console.error);
+                await interaction.editReply(`⚠️ 地震通知チャンネルが未設定のため、このチャンネルに送信しました。
+震源: ${loc.name} (${loc.lat}, ${loc.lon})
+\`/earthquake-setup\` で通知先を設定してください。`);
             }
 
             sendCommandLog(interaction, commandName);
@@ -1282,6 +1434,7 @@ client.on(Events.InteractionCreate, async interaction => {
             if (value === 'h_export') helpText = '**/export**\nメッセージ管理権限が必要です。指定したチャンネルのメッセージを.txtファイルにエクスポートします。\nオプション: `channel` `limit(1〜10000)` `before` `after`';
             // ★追加
             if (value === 'h_earthquake') helpText = '**/earthquake-setup**\nチャンネル管理権限が必要です。地震情報・緊急地震速報をリアルタイムで通知するチャンネルを設定します。\n`channel` を省略すると設定を解除します。\nデータ元: P2P地震情報API';
+            if (value === 'h_eqtest') helpText = '**/earthquake-test**\nチャンネル管理権限が必要です。設定済みの通知チャンネルに疑似地震通知を送信して表示を確認できます。\ntype: 地震情報 / EEW / 津波予報\nlocation: 震源地プリセット（省略時はランダム）';
 
             return await interaction.update({ content: `📜 **ヘルプ詳細**\n\n${helpText}`, components: [interaction.message.components[0]] });
         }
