@@ -288,8 +288,9 @@ async function buildMapAttachment(lat, lon) {
         top:  Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsY - h))),
     });
 
-    // 出力サイズ: 800×500 で震源地を中心にクロップ
-    const OUT_W = 800, OUT_H = 500;
+    // 出力サイズ: キャンバス幅いっぱい×500 で震源地を中心にクロップ
+    // ※ OUT_W はキャンバスサイズ(768)を超えないようにする（超えると extract がエラーになる）
+    const OUT_W = canvasSize, OUT_H = 500;
     const cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, Math.floor(markerAbsX - OUT_W / 2)));
     const cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, Math.floor(markerAbsY - OUT_H / 2)));
 
