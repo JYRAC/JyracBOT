@@ -195,7 +195,7 @@ function formatMessagesToText(messages, channel, guild) {
 // ─── 地震通知ユーティリティ ────────────────────────────────────
 
 /**
- * 緯度・経度から OpenStreetMap 静的地図画像URLを生成（API키不要）
+ * 緯度・経度から OpenStreetMap 静的地図画像URLを生成（APIキー不要）
  * zoom=6 で日本全土が見渡せる縮尺
  */
 function buildMapUrl(lat, lon) {
@@ -215,6 +215,24 @@ function jstToUnix(jstStr) {
         '$1-$2-$3T$4+09:00'
     );
     const ts = Math.floor(new Date(s).getTime() / 1000);
+    return isNaN(ts) ? null : ts;
+}
+
+/**
+ * JST形式 "YYYY/MM/DD HH:mm:ss.SSS"（ミリ秒付き）→ Unixミリ秒 に変換
+ * p2pquake の各レポート直下の `time` フィールド（API受信時刻）はJSTかつ
+ * ミリ秒付きで送られてくるため、jstToUnix とは別に用意する。
+ * タイムゾーンを指定せずに new Date() に渡すと、サーバーのローカルタイムゾーン
+ * （Render等ではUTC）でJSTの文字列がそのまま解釈されてしまい、実際の時刻と
+ * 9時間ズレてしまう不具合があったため、明示的に +09:00 を付与して変換する。
+ */
+function jstToUnixMs(jstStr) {
+    if (!jstStr) return null;
+    const s = jstStr.replace(
+        /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/,
+        '$1-$2-$3T$4+09:00'
+    );
+    const ts = new Date(s).getTime();
     return isNaN(ts) ? null : ts;
 }
 
@@ -394,8 +412,12 @@ function startEarthquakeMonitor() {
                 seenIds.add(data.id);
 
                 // 起動前のデータはスキップ（初回ポーリング時の大量通知を防ぐ）
-                const dataTime = new Date(data.time?.replace(/\//g, '-')).getTime();
-                if (dataTime < startedAt - 60_000) continue; // 起動1分前より古いものは無視
+                // data.time は JST のため、明示的に +09:00 を付けて変換する
+                // （これをせずに new Date() に直接渡すと、実行環境のタイムゾーンが
+                //  UTC の場合に9時間ズレて判定され、起動前から最大9時間分の
+                //  古い地震情報が「新着」扱いで再送されてしまう）
+                const dataTime = jstToUnixMs(data.time);
+                if (dataTime !== null && dataTime < startedAt - 60_000) continue; // 起動1分前より古いものは無視
 
                 if (data.code === 551) {
                     // 地震情報
