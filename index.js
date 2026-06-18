@@ -192,6 +192,35 @@ function formatMessagesToText(messages, channel, guild) {
 }
 
 // ─── 地震通知モジュール ────────────────────────────────────────
+// ─── 地震通知ユーティリティ ────────────────────────────────────
+
+/**
+ * 緯度・経度から OpenStreetMap 静的地図画像URLを生成（API키不要）
+ * zoom=6 で日本全土が見渡せる縮尺
+ */
+function buildMapUrl(lat, lon) {
+    if (lat == null || lon == null || lat === -200 || lon === -200) return null;
+    // staticmap.openstreetmap.de を使用（無料・登録不要）
+    const zoom = 6;
+    return `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lon}&zoom=${zoom}&size=600x300&markers=${lat},${lon},red`;
+}
+
+/**
+ * JST形式 "YYYY/MM/DD HH:mm:ss" → Unix秒 に変換
+ */
+function jstToUnix(jstStr) {
+    if (!jstStr) return null;
+    const s = jstStr.replace(
+        /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}:\d{2}:\d{2})$/,
+        '$1-$2-$3T$4+09:00'
+    );
+    const ts = Math.floor(new Date(s).getTime() / 1000);
+    return isNaN(ts) ? null : ts;
+}
+
+// 津波イベント追跡マップ: eventKey → 報数
+// eventKey = 発表元の発表日時（issue.time の地震発生時刻部分）
+const tsunamiEventCounter = new Map();
 
 const INTENSITY_LABEL = {
     '10': '1', '20': '2', '30': '3', '40': '4',
@@ -213,61 +242,117 @@ function getTsunamiLabel(code) {
 }
 
 function buildEEWEmbed(data) {
-    const intensity = INTENSITY_LABEL[data.maxIntensity] ?? '不明';
+    // EEW(code:556) のフィールドパス: data.earthquake.hypocenter, data.issue.serial
+    const hypo = data.earthquake?.hypocenter ?? {};
+    const rawScale = data.areas?.[0]?.scaleFrom;
+    const intensity = (rawScale != null && rawScale !== -1)
+        ? (INTENSITY_LABEL[String(Math.floor(rawScale))] ?? '予測震度あり')
+        : '不明';
     const color = INTENSITY_COLOR[intensity] ?? 0xFF0000;
-    return new EmbedBuilder()
+    const serial = data.issue?.serial ?? '?';
+    const originTs = jstToUnix(data.earthquake?.originTime);
+
+    const embed = new EmbedBuilder()
         .setTitle('🚨 緊急地震速報')
         .setColor(color)
         .setDescription('**強い揺れに備えてください！**')
         .addFields(
-            { name: '震源地', value: data.hypocenter?.name ?? '不明', inline: true },
-            { name: '最大予測震度', value: `震度 ${intensity}`, inline: true },
-            { name: 'マグニチュード', value: `M${data.magnitude ?? '不明'}`, inline: true },
-            { name: '深さ', value: data.hypocenter?.depth != null ? `${data.hypocenter.depth} km` : '不明', inline: true },
-            { name: '第N報', value: `第${data.serialNo ?? '?'}報${data.isFinal ? '（最終報）' : ''}`, inline: true },
+            { name: '震源地', value: hypo.name ?? '不明', inline: true },
+            { name: '最大予測震度', value: intensity !== '不明' ? `震度 ${intensity}` : '不明', inline: true },
+            { name: 'マグニチュード', value: (hypo.magnitude != null && hypo.magnitude !== -1) ? `M${hypo.magnitude}` : '不明', inline: true },
+            { name: '深さ', value: (hypo.depth != null && hypo.depth !== -1) ? `${Math.floor(hypo.depth)} km` : '不明', inline: true },
+            { name: '第N報', value: `第${serial}報`, inline: true },
         )
-        .setTimestamp(data.originTime ? new Date(data.originTime) : new Date())
+        .setTimestamp(originTs ? new Date(originTs * 1000) : new Date())
         .setFooter({ text: 'P2P地震情報 | 緊急地震速報' });
+
+    // 震源地図
+    const mapUrl = buildMapUrl(hypo.latitude, hypo.longitude);
+    if (mapUrl) embed.setImage(mapUrl);
+
+    return embed;
 }
 
 function buildQuakeEmbed(data) {
-    // maxScale は data.earthquake.maxScale にある（data.maxScale ではない）
+    const hypo = data.earthquake?.hypocenter ?? {};
     const rawScale = data.earthquake?.maxScale;
     const intensity = (rawScale != null && rawScale !== -1)
         ? (INTENSITY_LABEL[String(rawScale)] ?? '不明')
         : '不明';
     const color = INTENSITY_COLOR[intensity] ?? 0x5555FF;
 
-    // 発生時刻: "2019/08/26 20:53:00" 形式（日本時間）
-    // スラッシュ区切りをそのままnew Date()に渡すとUTC扱いされ9時間ずれるため、手動で変換
-    let quakeTimeStr = '不明';
-    if (data.earthquake?.time) {
-        const jstStr = data.earthquake.time.replace(
-            /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}:\d{2}:\d{2})$/,
-            '$1-$2-$3T$4+09:00'
-        );
-        const ts = Math.floor(new Date(jstStr).getTime() / 1000);
-        quakeTimeStr = isNaN(ts) ? data.earthquake.time : `<t:${ts}:F>`;
-    }
+    const quakeTs = jstToUnix(data.earthquake?.time);
+    const quakeTimeStr = quakeTs ? `<t:${quakeTs}:F>` : '不明';
 
     const embed = new EmbedBuilder()
         .setTitle('🌏 地震情報')
         .setColor(color)
         .addFields(
-            { name: '震源地', value: data.earthquake?.hypocenter?.name ?? '不明', inline: true },
+            { name: '震源地', value: hypo.name ?? '不明', inline: true },
             { name: '最大震度', value: intensity !== '不明' ? `震度 ${intensity}` : '不明', inline: true },
-            { name: 'マグニチュード', value: (data.earthquake?.hypocenter?.magnitude != null && data.earthquake.hypocenter.magnitude !== -1) ? `M${data.earthquake.hypocenter.magnitude}` : '不明', inline: true },
-            { name: '深さ', value: (data.earthquake?.hypocenter?.depth != null && data.earthquake.hypocenter.depth !== -1) ? `${data.earthquake.hypocenter.depth} km` : '不明', inline: true },
+            { name: 'マグニチュード', value: (hypo.magnitude != null && hypo.magnitude !== -1) ? `M${hypo.magnitude}` : '不明', inline: true },
+            { name: '深さ', value: (hypo.depth != null && hypo.depth !== -1) ? `${hypo.depth} km` : '不明', inline: true },
             { name: '発生時刻', value: quakeTimeStr, inline: false },
         )
         .setTimestamp()
         .setFooter({ text: 'P2P地震情報' });
 
-    // 津波情報（domesticTsunami フィールドを参照）
+    // 津波情報
     const tsunami = data.earthquake?.domesticTsunami;
     if (tsunami && tsunami !== 'None') {
         embed.addFields({ name: '🌊 国内津波', value: getTsunamiLabel(tsunami), inline: false });
     }
+
+    // 震源地図（緯度・経度が有効な場合のみ）
+    const mapUrl = buildMapUrl(hypo.latitude, hypo.longitude);
+    if (mapUrl) embed.setImage(mapUrl);
+
+    return embed;
+}
+
+/**
+ * 津波情報 Embed を生成（第◯報付き）
+ * @param {object} data - code:552 のデータ
+ * @param {number} reportNo - 報数
+ */
+function buildTsunamiEmbed(data, reportNo) {
+    const isCancelled = data.cancelled === true;
+    const issueTs = jstToUnix(data.issue?.time);
+    const issueTimeStr = issueTs ? `<t:${issueTs}:F>` : (data.issue?.time ?? '不明');
+
+    const embed = new EmbedBuilder()
+        .setTitle(isCancelled ? '🌊 津波予報 解除' : `🌊 津波予報 第${reportNo}報`)
+        .setColor(isCancelled ? 0x00AAFF : 0xFF6600)
+        .addFields(
+            { name: '発表時刻', value: issueTimeStr, inline: true },
+            { name: '発表元', value: data.issue?.source ?? '気象庁', inline: true },
+        )
+        .setTimestamp()
+        .setFooter({ text: 'P2P地震情報 | 津波予報' });
+
+    if (!isCancelled && Array.isArray(data.areas) && data.areas.length > 0) {
+        // 警報レベルでグループ化して表示
+        const gradeLabel = {
+            'MajorWarning': '🚨 大津波警報',
+            'Warning':      '⚠️ 津波警報',
+            'Watch':        '🔵 津波注意報',
+            'Unknown':      '❓ 不明',
+        };
+        const groups = {};
+        for (const area of data.areas) {
+            const label = gradeLabel[area.grade] ?? area.grade;
+            if (!groups[label]) groups[label] = [];
+            groups[label].push(area.name);
+        }
+        for (const [label, names] of Object.entries(groups)) {
+            // Discord Embed フィールドの value は 1024文字まで
+            const value = names.join('、');
+            embed.addFields({ name: label, value: value.slice(0, 1024), inline: false });
+        }
+    } else if (isCancelled) {
+        embed.setDescription('津波予報がすべて解除されました。');
+    }
+
     return embed;
 }
 
@@ -278,7 +363,7 @@ function buildQuakeEmbed(data) {
  * 通知先チャンネルIDは Firestore の earthquake_settings/{guildId} に保存
  */
 function startEarthquakeMonitor() {
-    const API_URL = 'https://api.p2pquake.net/v2/history?codes=551&codes=556&limit=5';
+    const API_URL = 'https://api.p2pquake.net/v2/history?codes=551&codes=552&codes=556&limit=10';
     const POLL_INTERVAL = 30_000; // 30秒ごと
 
     // 起動時刻（これ以前のデータは無視）
@@ -315,6 +400,19 @@ function startEarthquakeMonitor() {
                 if (data.code === 551) {
                     // 地震情報
                     await broadcast(buildQuakeEmbed(data));
+
+                } else if (data.code === 552) {
+                    // 津波予報: 同一イベント（issue.time が同じ）の報数を追跡
+                    const eventKey = data.issue?.time ?? data.id;
+                    const reportNo = (tsunamiEventCounter.get(eventKey) ?? 0) + 1;
+                    tsunamiEventCounter.set(eventKey, reportNo);
+                    // 古いイベントキーは最大50件まで保持（メモリリーク防止）
+                    if (tsunamiEventCounter.size > 50) {
+                        const firstKey = tsunamiEventCounter.keys().next().value;
+                        tsunamiEventCounter.delete(firstKey);
+                    }
+                    await broadcast(buildTsunamiEmbed(data, reportNo));
+
                 } else if (data.code === 556) {
                     // 緊急地震速報（警報）
                     if (data.cancelled) continue;
