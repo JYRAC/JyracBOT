@@ -231,23 +231,42 @@ function buildEEWEmbed(data) {
 }
 
 function buildQuakeEmbed(data) {
-    const intensity = data.maxScale != null ? (INTENSITY_LABEL[String(data.maxScale)] ?? '不明') : '不明';
+    // maxScale は data.earthquake.maxScale にある（data.maxScale ではない）
+    const rawScale = data.earthquake?.maxScale;
+    const intensity = (rawScale != null && rawScale !== -1)
+        ? (INTENSITY_LABEL[String(rawScale)] ?? '不明')
+        : '不明';
     const color = INTENSITY_COLOR[intensity] ?? 0x5555FF;
+
+    // 発生時刻: "2019/08/26 20:53:00" 形式（日本時間）
+    // スラッシュ区切りをそのままnew Date()に渡すとUTC扱いされ9時間ずれるため、手動で変換
+    let quakeTimeStr = '不明';
+    if (data.earthquake?.time) {
+        const jstStr = data.earthquake.time.replace(
+            /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}:\d{2}:\d{2})$/,
+            '$1-$2-$3T$4+09:00'
+        );
+        const ts = Math.floor(new Date(jstStr).getTime() / 1000);
+        quakeTimeStr = isNaN(ts) ? data.earthquake.time : `<t:${ts}:F>`;
+    }
+
     const embed = new EmbedBuilder()
         .setTitle('🌏 地震情報')
         .setColor(color)
         .addFields(
             { name: '震源地', value: data.earthquake?.hypocenter?.name ?? '不明', inline: true },
-            { name: '最大震度', value: `震度 ${intensity}`, inline: true },
-            { name: 'マグニチュード', value: data.earthquake?.hypocenter?.magnitude != null ? `M${data.earthquake.hypocenter.magnitude}` : '不明', inline: true },
-            { name: '深さ', value: data.earthquake?.hypocenter?.depth != null ? `${data.earthquake.hypocenter.depth} km` : '不明', inline: true },
-            { name: '発生時刻', value: data.earthquake?.time ? `<t:${Math.floor(new Date(data.earthquake.time).getTime() / 1000)}:F>` : '不明', inline: false },
+            { name: '最大震度', value: intensity !== '不明' ? `震度 ${intensity}` : '不明', inline: true },
+            { name: 'マグニチュード', value: (data.earthquake?.hypocenter?.magnitude != null && data.earthquake.hypocenter.magnitude !== -1) ? `M${data.earthquake.hypocenter.magnitude}` : '不明', inline: true },
+            { name: '深さ', value: (data.earthquake?.hypocenter?.depth != null && data.earthquake.hypocenter.depth !== -1) ? `${data.earthquake.hypocenter.depth} km` : '不明', inline: true },
+            { name: '発生時刻', value: quakeTimeStr, inline: false },
         )
         .setTimestamp()
         .setFooter({ text: 'P2P地震情報' });
 
-    if (data.tsunami && data.tsunami !== 'None') {
-        embed.addFields({ name: '🌊 津波', value: getTsunamiLabel(data.tsunami), inline: false });
+    // 津波情報（domesticTsunami フィールドを参照）
+    const tsunami = data.earthquake?.domesticTsunami;
+    if (tsunami && tsunami !== 'None') {
+        embed.addFields({ name: '🌊 国内津波', value: getTsunamiLabel(tsunami), inline: false });
     }
     return embed;
 }
