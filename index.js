@@ -237,17 +237,16 @@ async function fetchGSITile(zoom, x, y) {
 async function buildMapAttachment(lat, lon) {
     if (lat == null || lon == null || lat === -200 || lon === -200) return null;
 
-    // ズームレベルを「7」から「8」に上げました（これで日本国内の詳細度がアップします）
+    // ズームを8にして、取得範囲を「3x3」に絞ります
     const zoom = 8; 
     const TILE = 256;
     
-    // 震源地のタイル座標とピクセル位置を計算
+    // 取得する範囲を「3x3」に限定（これで中国側が写りにくくなります）
+    const HALF = 1; 
+    const GRID = 3; 
+
     const { tileX: cx, tileY: cy, pixX: markerPixX, pixY: markerPixY }
         = latLonToTileAndPixel(lat, lon, zoom);
-
-    // 取得する範囲を「3x3」から「5x5」に戻します（ズームを上げた分、広い範囲を取らないと日本地図が途切れるため）
-    const HALF = 2; 
-    const GRID = 5; 
 
     const fetches = [];
     for (let dy = -HALF; dy <= HALF; dy++) {
@@ -261,57 +260,11 @@ async function buildMapAttachment(lat, lon) {
     }
     const tiles = await Promise.all(fetches);
 
-    // キャンバスサイズ（5x5枚で1280x1280px）
+    // 全体キャンバスサイズ（3x3なので 768x768px）
     const canvasSize = TILE * GRID;
     
     // 震源地の絶対座標
-    const markerAbsX = HALF * TILE + markerPixX;
-    const markerAbsY = HALF * TILE + markerPixY;
-
-    // 出力サイズ：縦4:横5 (500x400)
-    const OUT_W = 500, OUT_H = 400;
-
-    // 震源地を中心に切り抜き（ここが一番重要です）
-    let cropLeft = Math.floor(markerAbsX - OUT_W / 2);
-    let cropTop  = Math.floor(markerAbsY - OUT_H / 2);
-
-    // 境界チェック（画像端でズレるのを防ぐ）
-    cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, cropLeft));
-    cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, cropTop));
-
-    // マーカーSVGの設定
-    const ARM = 16, SW = 5, PAD = 12;
-    const sz = (ARM + PAD) * 2;
-    const h = sz / 2;
-    const markerSvg = Buffer.from(
-        `<svg width="${sz}" height="${sz}" xmlns="http://www.w3.org/2000/svg">` +
-        `<line x1="${h-ARM}" y1="${h-ARM}" x2="${h+ARM}" y2="${h+ARM}" stroke="white" stroke-width="${SW+4}" stroke-linecap="round"/>` +
-        `<line x1="${h+ARM}" y1="${h-ARM}" x2="${h-ARM}" y2="${h+ARM}" stroke="white" stroke-width="${SW+4}" stroke-linecap="round"/>` +
-        `<line x1="${h-ARM}" y1="${h-ARM}" x2="${h+ARM}" y2="${h+ARM}" stroke="#EE0000" stroke-width="${SW}" stroke-linecap="round"/>` +
-        `<line x1="${h+ARM}" y1="${h-ARM}" x2="${h-ARM}" y2="${h+ARM}" stroke="#EE0000" stroke-width="${SW}" stroke-linecap="round"/>` +
-        `</svg>`
-    );
-
-    const composites = tiles
-        .filter(t => t !== null)
-        .map(t => ({ input: t.buf, left: t.left, top: t.top }));
-    
-    composites.push({
-        input: markerSvg,
-        left: Math.floor(markerAbsX - h),
-        top: Math.floor(markerAbsY - h)
-    });
-
-    return await sharp({
-        create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 220, g: 220, b: 220, alpha: 1 } }
-    })
-        .composite(composites)
-        .extract({ left: cropLeft, top: cropTop, width: OUT_W, height: OUT_H })
-        .png()
-        .toBuffer();
-}
-
-/**
+    const markerAbsX = HALF ***
  * JST形式 "YYYY/MM/DD HH:mm:ss" → Unix秒 に変換
  */
 function jstToUnix(jstStr) {
