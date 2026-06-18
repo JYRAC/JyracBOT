@@ -25,7 +25,7 @@ const express = require('express');
 const admin = require('firebase-admin');
 const fs = require('fs');
 const path = require('path');
-const WebSocket = require('ws'); // ← 追加 (npm install ws)
+// wsパッケージは不要になりました（HTTPポーリング方式に変更）
 
 // --- Firebase 初期化 (設定・通知保存用) ---
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -253,15 +253,20 @@ function buildQuakeEmbed(data) {
 }
 
 /**
- * 地震通知を開始する
+ * 地震通知を開始する（HTTPポーリング方式）
+ * RenderはWebSocket外向き接続が制限されるため、
+ * p2pquake REST API を30秒ごとにポーリングして新着を検出します。
  * 通知先チャンネルIDは Firestore の earthquake_settings/{guildId} に保存
  */
 function startEarthquakeMonitor() {
-    const WS_URL = 'wss://ws-api.p2pquake.net/v2/ws';
-    let ws;
+    const API_URL = 'https://api.p2pquake.net/v2/history?codes=551&codes=556&limit=5';
+    const POLL_INTERVAL = 30_000; // 30秒ごと
+
+    // 起動時刻（これ以前のデータは無視）
+    const startedAt = Date.now();
+    const seenIds = new Set();
 
     async function getNotifyChannels() {
-        // Firestoreから全サーバーの通知チャンネルを取得
         const snap = await db.collection('earthquake_settings').get();
         return snap.docs.map(d => d.data().channelId).filter(Boolean);
     }
@@ -274,38 +279,37 @@ function startEarthquakeMonitor() {
         }
     }
 
-    function connect() {
-        console.log('[地震監視] WebSocket接続中...');
-        ws = new WebSocket(WS_URL);
+    async function poll() {
+        try {
+            const res = await fetch(API_URL);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const items = await res.json();
 
-        ws.on('open', () => console.log('[地震監視] 接続しました'));
+            for (const data of items.reverse()) { // 古い順に処理
+                if (seenIds.has(data.id)) continue;
+                seenIds.add(data.id);
 
-        ws.on('message', async (raw) => {
-            let data;
-            try { data = JSON.parse(raw.toString()); } catch { return; }
+                // 起動前のデータはスキップ（初回ポーリング時の大量通知を防ぐ）
+                const dataTime = new Date(data.time?.replace(/\//g, '-')).getTime();
+                if (dataTime < startedAt - 60_000) continue; // 起動1分前より古いものは無視
 
-            if (data.code === 551) {
-                // 緊急地震速報
-                if (data.cancelled) return;
-                await broadcast(buildEEWEmbed(data));
-            } else if (data.code === 556) {
-                // 地震情報
-                await broadcast(buildQuakeEmbed(data));
+                if (data.code === 551) {
+                    // 地震情報
+                    await broadcast(buildQuakeEmbed(data));
+                } else if (data.code === 556) {
+                    // 緊急地震速報（警報）
+                    if (data.cancelled) continue;
+                    await broadcast(buildEEWEmbed(data));
+                }
             }
-        });
-
-        ws.on('close', (code) => {
-            console.log(`[地震監視] 切断 (${code})。30秒後に再接続します`);
-            setTimeout(connect, 30_000);
-        });
-
-        ws.on('error', (err) => {
-            console.error('[地震監視] エラー:', err.message);
-            ws.close();
-        });
+        } catch (err) {
+            console.error('[地震監視] ポーリングエラー:', err.message);
+        }
     }
 
-    connect();
+    console.log('[地震監視] HTTPポーリング開始 (30秒間隔)');
+    poll(); // 初回即実行
+    setInterval(poll, POLL_INTERVAL);
 }
 
 // ─── スラッシュコマンド定義 ────────────────────────────────────
