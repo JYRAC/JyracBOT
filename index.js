@@ -307,6 +307,19 @@ function jstToUnix(jstStr) {
     return isNaN(ts) ? null : ts;
 }
 
+/**
+ * JST形式 "YYYY/MM/DD HH:mm:ss" → Unixミリ秒 に変換（ポーリング時刻比較用）
+ */
+function jstToUnixMs(jstStr) {
+    if (!jstStr) return null;
+    const s = jstStr.replace(
+        /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/,
+        '$1-$2-$3T$4+09:00'
+    );
+    const ts = new Date(s).getTime();
+    return isNaN(ts) ? null : ts;
+}
+
 // 津波イベント追跡マップ: eventKey → 報数
 // eventKey = 発表元の発表日時（issue.time の地震発生時刻部分）
 const tsunamiEventCounter = new Map();
@@ -354,10 +367,6 @@ function buildEEWEmbed(data) {
         )
         .setTimestamp(originTs ? new Date(originTs * 1000) : new Date())
         .setFooter({ text: 'P2P地震情報 | 緊急地震速報' });
-
-    // 震源地図
-    const mapUrl = buildMapUrl(hypo.latitude, hypo.longitude);
-    if (mapUrl) embed.setImage(mapUrl);
 
     return embed;
 }
