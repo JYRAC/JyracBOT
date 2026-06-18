@@ -237,35 +237,18 @@ async function fetchGSITile(zoom, x, y) {
 async function buildMapAttachment(lat, lon) {
     if (lat == null || lon == null || lat === -200 || lon === -200) return null;
 
-    const zoom = 6;
+    // 拡大率の調整：日本周辺を見やすくするため zoom = 7 程度に設定
+    const zoom = 7; 
     const TILE = 256;
-    const HALF = 2; // 5x5タイル
-    const GRID = HALF * 2 + 1;
-
-    // 震源地のタイル座標とピクセル位置
+    
+    // 震源地のタイル座標とピクセル位置を計算
     const { tileX: cx, tileY: cy, pixX: markerPixX, pixY: markerPixY }
         = latLonToTileAndPixel(lat, lon, zoom);
 
-    // 震源地が絶対キャンバス内のどこにあるか (1280x1280基準)
-    const markerAbsX = HALF * TILE + markerPixX;
-    const markerAbsY = HALF * TILE + markerPixY;
+    // 今回は震源地を中心とした3x3（768x768px）のタイル範囲を取得
+    const HALF = 1; 
+    const GRID = 3; 
 
-    // 出力サイズ (5:4比率)
-    const OUT_W = 500;
-    const OUT_H = 400;
-
-    // 震源地を中心にするための切り抜き開始座標
-    let cropLeft = Math.floor(markerAbsX - OUT_W / 2);
-    let cropTop  = Math.floor(markerAbsY - OUT_H / 2);
-
-    // 5x5タイルの合計サイズ
-    const canvasSize = TILE * GRID;
-
-    // キャンバス外にはみ出さないよう制限
-    cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, cropLeft));
-    cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, cropTop));
-
-    // タイル取得
     const fetches = [];
     for (let dy = -HALF; dy <= HALF; dy++) {
         for (let dx = -HALF; dx <= HALF; dx++) {
@@ -277,6 +260,24 @@ async function buildMapAttachment(lat, lon) {
         }
     }
     const tiles = await Promise.all(fetches);
+
+    // 全体キャンバスサイズ
+    const canvasSize = TILE * GRID; // 768x768
+    
+    // 震源地の絶対キャンバス内の座標
+    const markerAbsX = HALF * TILE + markerPixX;
+    const markerAbsY = HALF * TILE + markerPixY;
+
+    // 出力サイズ：縦4:横5（横500px, 縦400px）
+    const OUT_W = 500, OUT_H = 400;
+
+    // 震源地を中心にする切り抜き開始座標
+    let cropLeft = Math.floor(markerAbsX - OUT_W / 2);
+    let cropTop  = Math.floor(markerAbsY - OUT_H / 2);
+
+    // キャンバス外にはみ出さないよう制限
+    cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, cropLeft));
+    cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, cropTop));
 
     // マーカーSVG
     const ARM = 16, SW = 5, PAD = 12;
@@ -291,7 +292,6 @@ async function buildMapAttachment(lat, lon) {
         `</svg>`
     );
 
-    // コンポジット合成
     const composites = tiles
         .filter(t => t !== null)
         .map(t => ({ input: t.buf, left: t.left, top: t.top }));
