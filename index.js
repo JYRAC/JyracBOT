@@ -25,7 +25,7 @@ const express = require('express');
 const admin = require('firebase-admin');
 const fs = require('fs');
 const path = require('path');
-// wsパッケージは不要になりました（HTTPポーリング方式に変更）
+const sharp = require('sharp'); // ★追加: npm install sharp
 
 // --- Firebase 初期化 (設定・通知保存用) ---
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -195,14 +195,104 @@ function formatMessagesToText(messages, channel, guild) {
 // ─── 地震通知ユーティリティ ────────────────────────────────────
 
 /**
- * 緯度・経度から OpenStreetMap 静的地図画像URLを生成（APIキー不要）
- * zoom=6 で日本全土が見渡せる縮尺
+ * 緯度・経度からOSMタイルのX/Y座標を計算する
  */
-function buildMapUrl(lat, lon) {
+function latLonToTile(lat, lon, zoom) {
+    const n = Math.pow(2, zoom);
+    const x = Math.floor((lon + 180) / 360 * n);
+    const y = Math.floor(
+        (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n
+    );
+    return { x, y };
+}
+
+/**
+ * OSMタイル1枚をfetchしてBufferで返す
+ */
+async function fetchTile(zoom, x, y) {
+    const url = `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`;
+    const res = await fetch(url, {
+        headers: { 'User-Agent': 'JYRACDiscordBot/1.0 (earthquake-notify)' }
+    });
+    if (!res.ok) throw new Error(`Tile fetch failed: ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+}
+
+/**
+ * 緯度・経度からOSMタイルを3×3枚取得・合成し、
+ * 震源地に赤い丸マーカーを描画してPNG Bufferを返す。
+ * 座標が無効な場合は null を返す。
+ */
+async function buildMapAttachment(lat, lon) {
     if (lat == null || lon == null || lat === -200 || lon === -200) return null;
-    // staticmap.openstreetmap.de を使用（無料・登録不要）
+
     const zoom = 6;
-    return `https://staticmap.openstreetmap.de/staticmap.php?center=${lat},${lon}&zoom=${zoom}&size=600x300&markers=${lat},${lon},red`;
+    const TILE = 256; // 1タイルのピクセルサイズ
+    const GRID = 3;   // 3×3タイル
+
+    const center = latLonToTile(lat, lon, zoom);
+
+    // 3×3タイルを並列取得
+    const fetchPromises = [];
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            const tx = center.x + dx;
+            const ty = center.y + dy;
+            fetchPromises.push(
+                fetchTile(zoom, tx, ty)
+                    .then(buf => ({ dx: dx + 1, dy: dy + 1, buf }))
+                    .catch(() => null) // 取得失敗タイルはスキップ
+            );
+        }
+    }
+
+    const results = await Promise.all(fetchPromises);
+
+    // 768×768 のグレーキャンバスを作成
+    const canvasSize = TILE * GRID;
+    const canvas = sharp({
+        create: {
+            width: canvasSize,
+            height: canvasSize,
+            channels: 3,
+            background: { r: 240, g: 240, b: 240 }
+        }
+    });
+
+    // タイルを合成
+    const composites = results
+        .filter(r => r !== null)
+        .map(({ dx, dy, buf }) => ({
+            input: buf,
+            left: dx * TILE,
+            top: dy * TILE,
+        }));
+
+    // 震源地マーカー（赤い丸＋白十字 SVG）を中央に合成
+    const markerSize = 28;
+    const half = markerSize / 2;
+    const markerSvg = Buffer.from(
+        `<svg width="${markerSize}" height="${markerSize}" xmlns="http://www.w3.org/2000/svg">` +
+        `<circle cx="${half}" cy="${half}" r="${half - 1}" fill="red" fill-opacity="0.9" stroke="white" stroke-width="2.5"/>` +
+        `<line x1="${half}" y1="5" x2="${half}" y2="${markerSize - 5}" stroke="white" stroke-width="3" stroke-linecap="round"/>` +
+        `<line x1="5" y1="${half}" x2="${markerSize - 5}" y2="${half}" stroke="white" stroke-width="3" stroke-linecap="round"/>` +
+        `</svg>`
+    );
+
+    composites.push({
+        input: markerSvg,
+        left: Math.floor(canvasSize / 2 - half),
+        top:  Math.floor(canvasSize / 2 - half),
+    });
+
+    // 合成 → 600×300 にリサイズ → PNG Buffer
+    const pngBuffer = await canvas
+        .composite(composites)
+        .resize(600, 300)
+        .png()
+        .toBuffer();
+
+    return pngBuffer;
 }
 
 /**
@@ -220,11 +310,6 @@ function jstToUnix(jstStr) {
 
 /**
  * JST形式 "YYYY/MM/DD HH:mm:ss.SSS"（ミリ秒付き）→ Unixミリ秒 に変換
- * p2pquake の各レポート直下の `time` フィールド（API受信時刻）はJSTかつ
- * ミリ秒付きで送られてくるため、jstToUnix とは別に用意する。
- * タイムゾーンを指定せずに new Date() に渡すと、サーバーのローカルタイムゾーン
- * （Render等ではUTC）でJSTの文字列がそのまま解釈されてしまい、実際の時刻と
- * 9時間ズレてしまう不具合があったため、明示的に +09:00 を付与して変換する。
  */
 function jstToUnixMs(jstStr) {
     if (!jstStr) return null;
@@ -237,7 +322,6 @@ function jstToUnixMs(jstStr) {
 }
 
 // 津波イベント追跡マップ: eventKey → 報数
-// eventKey = 発表元の発表日時（issue.time の地震発生時刻部分）
 const tsunamiEventCounter = new Map();
 
 const INTENSITY_LABEL = {
@@ -259,8 +343,8 @@ function getTsunamiLabel(code) {
     return labels[code] ?? code;
 }
 
+// ★変更: setImage は broadcast 側で行うため、embed のみ返す
 function buildEEWEmbed(data) {
-    // EEW(code:556) のフィールドパス: data.earthquake.hypocenter, data.issue.serial
     const hypo = data.earthquake?.hypocenter ?? {};
     const rawScale = data.areas?.[0]?.scaleFrom;
     const intensity = (rawScale != null && rawScale !== -1)
@@ -284,13 +368,10 @@ function buildEEWEmbed(data) {
         .setTimestamp(originTs ? new Date(originTs * 1000) : new Date())
         .setFooter({ text: 'P2P地震情報 | 緊急地震速報' });
 
-    // 震源地図
-    const mapUrl = buildMapUrl(hypo.latitude, hypo.longitude);
-    if (mapUrl) embed.setImage(mapUrl);
-
     return embed;
 }
 
+// ★変更: setImage は broadcast 側で行うため、embed のみ返す
 function buildQuakeEmbed(data) {
     const hypo = data.earthquake?.hypocenter ?? {};
     const rawScale = data.earthquake?.maxScale;
@@ -315,23 +396,16 @@ function buildQuakeEmbed(data) {
         .setTimestamp()
         .setFooter({ text: 'P2P地震情報' });
 
-    // 津波情報
     const tsunami = data.earthquake?.domesticTsunami;
     if (tsunami && tsunami !== 'None') {
         embed.addFields({ name: '🌊 国内津波', value: getTsunamiLabel(tsunami), inline: false });
     }
-
-    // 震源地図（緯度・経度が有効な場合のみ）
-    const mapUrl = buildMapUrl(hypo.latitude, hypo.longitude);
-    if (mapUrl) embed.setImage(mapUrl);
 
     return embed;
 }
 
 /**
  * 津波情報 Embed を生成（第◯報付き）
- * @param {object} data - code:552 のデータ
- * @param {number} reportNo - 報数
  */
 function buildTsunamiEmbed(data, reportNo) {
     const isCancelled = data.cancelled === true;
@@ -349,7 +423,6 @@ function buildTsunamiEmbed(data, reportNo) {
         .setFooter({ text: 'P2P地震情報 | 津波予報' });
 
     if (!isCancelled && Array.isArray(data.areas) && data.areas.length > 0) {
-        // 警報レベルでグループ化して表示
         const gradeLabel = {
             'MajorWarning': '🚨 大津波警報',
             'Warning':      '⚠️ 津波警報',
@@ -363,7 +436,6 @@ function buildTsunamiEmbed(data, reportNo) {
             groups[label].push(area.name);
         }
         for (const [label, names] of Object.entries(groups)) {
-            // Discord Embed フィールドの value は 1024文字まで
             const value = names.join('、');
             embed.addFields({ name: label, value: value.slice(0, 1024), inline: false });
         }
@@ -376,15 +448,11 @@ function buildTsunamiEmbed(data, reportNo) {
 
 /**
  * 地震通知を開始する（HTTPポーリング方式）
- * RenderはWebSocket外向き接続が制限されるため、
- * p2pquake REST API を30秒ごとにポーリングして新着を検出します。
- * 通知先チャンネルIDは Firestore の earthquake_settings/{guildId} に保存
  */
 function startEarthquakeMonitor() {
     const API_URL = 'https://api.p2pquake.net/v2/history?codes=551&codes=552&codes=556&limit=10';
-    const POLL_INTERVAL = 30_000; // 30秒ごと
+    const POLL_INTERVAL = 30_000;
 
-    // 起動時刻（これ以前のデータは無視）
     const startedAt = Date.now();
     const seenIds = new Set();
 
@@ -393,11 +461,30 @@ function startEarthquakeMonitor() {
         return snap.docs.map(d => d.data().channelId).filter(Boolean);
     }
 
-    async function broadcast(embed) {
+    // ★変更: lat/lon を受け取り、地図画像を生成して添付する
+    async function broadcast(embed, lat, lon) {
         const channelIds = await getNotifyChannels().catch(() => []);
+
+        // 地図画像を生成（失敗しても通知本文は送る）
+        let attachment = null;
+        if (lat != null && lon != null) {
+            const buf = await buildMapAttachment(lat, lon).catch(e => {
+                console.error('[地図生成エラー]', e.message);
+                return null;
+            });
+            if (buf) {
+                attachment = new AttachmentBuilder(buf, { name: 'map.png' });
+                embed.setImage('attachment://map.png');
+            }
+        }
+
         for (const channelId of channelIds) {
             const ch = await client.channels.fetch(channelId).catch(() => null);
-            if (ch) await ch.send({ embeds: [embed] }).catch(console.error);
+            if (!ch) continue;
+
+            const payload = { embeds: [embed] };
+            if (attachment) payload.files = [attachment];
+            await ch.send(payload).catch(console.error);
         }
     }
 
@@ -407,38 +494,34 @@ function startEarthquakeMonitor() {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const items = await res.json();
 
-            for (const data of items.reverse()) { // 古い順に処理
+            for (const data of items.reverse()) {
                 if (seenIds.has(data.id)) continue;
                 seenIds.add(data.id);
 
-                // 起動前のデータはスキップ（初回ポーリング時の大量通知を防ぐ）
-                // data.time は JST のため、明示的に +09:00 を付けて変換する
-                // （これをせずに new Date() に直接渡すと、実行環境のタイムゾーンが
-                //  UTC の場合に9時間ズレて判定され、起動前から最大9時間分の
-                //  古い地震情報が「新着」扱いで再送されてしまう）
                 const dataTime = jstToUnixMs(data.time);
-                if (dataTime !== null && dataTime < startedAt - 60_000) continue; // 起動1分前より古いものは無視
+                if (dataTime !== null && dataTime < startedAt - 60_000) continue;
 
                 if (data.code === 551) {
-                    // 地震情報
-                    await broadcast(buildQuakeEmbed(data));
+                    // ★変更: 震源座標を broadcast に渡す
+                    const hypo = data.earthquake?.hypocenter ?? {};
+                    await broadcast(buildQuakeEmbed(data), hypo.latitude, hypo.longitude);
 
                 } else if (data.code === 552) {
-                    // 津波予報: 同一イベント（issue.time が同じ）の報数を追跡
                     const eventKey = data.issue?.time ?? data.id;
                     const reportNo = (tsunamiEventCounter.get(eventKey) ?? 0) + 1;
                     tsunamiEventCounter.set(eventKey, reportNo);
-                    // 古いイベントキーは最大50件まで保持（メモリリーク防止）
                     if (tsunamiEventCounter.size > 50) {
                         const firstKey = tsunamiEventCounter.keys().next().value;
                         tsunamiEventCounter.delete(firstKey);
                     }
-                    await broadcast(buildTsunamiEmbed(data, reportNo));
+                    // 津波は震源座標なし
+                    await broadcast(buildTsunamiEmbed(data, reportNo), null, null);
 
                 } else if (data.code === 556) {
-                    // 緊急地震速報（警報）
                     if (data.cancelled) continue;
-                    await broadcast(buildEEWEmbed(data));
+                    // ★変更: 震源座標を broadcast に渡す
+                    const hypo = data.earthquake?.hypocenter ?? {};
+                    await broadcast(buildEEWEmbed(data), hypo.latitude, hypo.longitude);
                 }
             }
         } catch (err) {
@@ -447,14 +530,13 @@ function startEarthquakeMonitor() {
     }
 
     console.log('[地震監視] HTTPポーリング開始 (30秒間隔)');
-    poll(); // 初回即実行
+    poll();
     setInterval(poll, POLL_INTERVAL);
 }
 
 // ─── スラッシュコマンド定義 ────────────────────────────────────
 
 const commands = [
-    // 1. 認証パネル作成
     new SlashCommandBuilder()
         .setName('verify')
         .setDescription('認証パネルを作成します')
@@ -463,7 +545,6 @@ const commands = [
         .addStringOption(o => o.setName('description').setDescription('パネルの説明文'))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
 
-    // 2. チケット作成パネル
     new SlashCommandBuilder()
         .setName('ticket')
         .setDescription('チケットパネルを作成します')
@@ -473,21 +554,18 @@ const commands = [
         .addStringOption(o => o.setName('panel-desc').setDescription('チケット作成時に送信されるメッセージ'))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 
-    // 3. 一括削除
     new SlashCommandBuilder()
         .setName('delete')
         .setDescription('メッセージを一括削除します')
         .addIntegerOption(o => o.setName('amount').setDescription('件数(1-100)').setRequired(true))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
 
-    // 4. ログ設定・解除
     new SlashCommandBuilder()
         .setName('log')
         .setDescription('ログの送信先を設定または解除します')
         .addChannelOption(o => o.setName('channel').setDescription('送信先チャンネル（指定なしで設定解除）').setRequired(false))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
 
-    // 5. ロール付与
     new SlashCommandBuilder()
         .setName('give-role')
         .setDescription('指定したユーザーにロールを付与します')
@@ -495,7 +573,6 @@ const commands = [
         .addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
 
-    // 6. ロール剥奪
     new SlashCommandBuilder()
         .setName('remove-role')
         .setDescription('指定したユーザーからロールを剥奪します')
@@ -503,26 +580,22 @@ const commands = [
         .addRoleOption(o => o.setName('role').setDescription('剥奪するロール').setRequired(true))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
 
-    // 7. ロール確認
     new SlashCommandBuilder()
         .setName('role-confirmation')
         .setDescription('指定ユーザーが所持しているロールの一覧を確認します')
         .addUserOption(o => o.setName('target').setDescription('確認対象のユーザー').setRequired(true))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers),
 
-    // 8. 通知登録・解除
     new SlashCommandBuilder()
         .setName('receive-notifications')
         .setDescription('重要なお知らせの通知登録・解除を行います'),
 
-    // 9. お知らせ送信
     new SlashCommandBuilder()
         .setName('notice')
         .setDescription('登録ユーザーにお知らせをDM送信します(管理者専用)')
         .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
 
-    // 10. 一斉送信
     new SlashCommandBuilder()
         .setName('broadcast')
         .setDescription('指定ロールの所持者に一斉DMを送信します(管理者専用)')
@@ -530,17 +603,14 @@ const commands = [
         .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
 
-    // 11. 作成依頼
     new SlashCommandBuilder()
         .setName('request')
         .setDescription('新規コマンドの作成依頼を送ります'),
 
-    // 12. ヘルプ
     new SlashCommandBuilder()
         .setName('help')
         .setDescription('コマンドの一覧と詳細を表示します'),
 
-    // 13. チャンネルエクスポート
     new SlashCommandBuilder()
         .setName('export')
         .setDescription('チャンネルのメッセージをテキストファイルにエクスポートします')
@@ -567,7 +637,6 @@ const commands = [
         )
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
 
-    // 14. 地震通知設定 ★追加
     new SlashCommandBuilder()
         .setName('earthquake-setup')
         .setDescription('地震・緊急地震速報の通知チャンネルを設定または解除します')
@@ -591,7 +660,6 @@ client.once(Events.ClientReady, async () => {
         console.error(error);
     }
 
-    // 15秒ごとにアクティビティを更新
     setInterval(() => {
         client.user.setActivity(
             activities[Math.floor(Math.random() * activities.length)],
@@ -599,7 +667,6 @@ client.once(Events.ClientReady, async () => {
         );
     }, 15000);
 
-    // 地震通知モニター開始 ★追加
     startEarthquakeMonitor();
 
     console.log(`Logged in as ${client.user.tag}`);
@@ -613,11 +680,9 @@ app.listen(3000);
 // --- インタラクション受信 ---
 client.on(Events.InteractionCreate, async interaction => {
 
-    // 1. スラッシュコマンドの処理
     if (interaction.isChatInputCommand()) {
         const { commandName, options } = interaction;
 
-        // /log コマンド
         if (commandName === 'log') {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const channel = options.getChannel('channel');
@@ -650,7 +715,6 @@ client.on(Events.InteractionCreate, async interaction => {
             }
         }
 
-        // /verify コマンド
         if (commandName === 'verify') {
             const role = options.getRole('role');
             const title = options.getString('title') ?? '認証パネル';
@@ -673,7 +737,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /delete コマンド
         if (commandName === 'delete') {
             const amount = options.getInteger('amount');
             const row = new ActionRowBuilder().addComponents(
@@ -689,7 +752,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /ticket コマンド
         if (commandName === 'ticket') {
             const adminRole = options.getRole('admin-role');
             const key = `t_${Date.now()}`;
@@ -712,7 +774,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /give-role / /remove-role コマンド
         if (['give-role', 'remove-role'].includes(commandName)) {
             const member = options.getMember('target');
             const role = options.getRole('role');
@@ -732,7 +793,6 @@ client.on(Events.InteractionCreate, async interaction => {
             }
         }
 
-        // /role-confirmation コマンド
         if (commandName === 'role-confirmation') {
             const member = options.getMember('target');
             if (!member) return await interaction.reply({ content: '❌ ユーザーが見つかりませんでした。', flags: MessageFlags.Ephemeral });
@@ -752,7 +812,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /receive-notifications コマンド
         if (commandName === 'receive-notifications') {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const doc = await db.collection('subscribers').doc(interaction.user.id).get();
@@ -771,7 +830,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /notice / /broadcast コマンド (モーダル呼出)
         if (commandName === 'notice' || commandName === 'broadcast') {
             if (options.getString('password') !== process.env.BROADCAST_PASSWORD) {
                 return await interaction.reply({ content: '❌ パスワードが一致しません。', flags: MessageFlags.Ephemeral });
@@ -832,7 +890,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /request コマンド
         if (commandName === 'request') {
             const modal = new ModalBuilder()
                 .setCustomId('req_modal')
@@ -849,7 +906,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /help コマンド
         if (commandName === 'help') {
             const select = new StringSelectMenuBuilder()
                 .setCustomId('help_select')
@@ -860,7 +916,7 @@ client.on(Events.InteractionCreate, async interaction => {
                     { label: '/log (管理ログ)', value: 'h_log' },
                     { label: '/role-confirmation (確認)', value: 'h_role' },
                     { label: '/export (チャンネルエクスポート)', value: 'h_export' },
-                    { label: '/earthquake-setup (地震通知設定)', value: 'h_earthquake' }, // ★追加
+                    { label: '/earthquake-setup (地震通知設定)', value: 'h_earthquake' },
                 ]);
 
             await interaction.reply({
@@ -872,7 +928,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /export コマンド
         if (commandName === 'export') {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -938,7 +993,6 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /earthquake-setup コマンド ★追加
         if (commandName === 'earthquake-setup') {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const channel = options.getChannel('channel');
@@ -970,7 +1024,6 @@ client.on(Events.InteractionCreate, async interaction => {
         }
     }
 
-    // 2. モーダル送信の処理
     if (interaction.isModalSubmit()) {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -1043,7 +1096,6 @@ client.on(Events.InteractionCreate, async interaction => {
         }
     }
 
-    // 3. ボタン操作の処理
     if (interaction.isButton()) {
         const { customId } = interaction;
 
@@ -1187,7 +1239,6 @@ client.on(Events.InteractionCreate, async interaction => {
         }
     }
 
-    // 4. セレクトメニュー操作の処理
     if (interaction.isStringSelectMenu()) {
         if (interaction.customId === 'help_select') {
             const value = interaction.values[0];
@@ -1198,7 +1249,6 @@ client.on(Events.InteractionCreate, async interaction => {
             if (value === 'h_log') helpText = '**/log**\n管理者権限が必要です。認証や一括削除のアクションが行われた際に送信されるログチャンネルの指定・解除を行います。';
             if (value === 'h_role') helpText = '**/role-confirmation**\nモデレーター権限が必要です。対象のユーザーが現在持っている全ロールの一覧を表示します。';
             if (value === 'h_export') helpText = '**/export**\nメッセージ管理権限が必要です。指定したチャンネルのメッセージを.txtファイルにエクスポートします。\nオプション: `channel` `limit(1〜10000)` `before` `after`';
-            // ★追加
             if (value === 'h_earthquake') helpText = '**/earthquake-setup**\nチャンネル管理権限が必要です。地震情報・緊急地震速報をリアルタイムで通知するチャンネルを設定します。\n`channel` を省略すると設定を解除します。\nデータ元: P2P地震情報API';
 
             return await interaction.update({ content: `📜 **ヘルプ詳細**\n\n${helpText}`, components: [interaction.message.components[0]] });
