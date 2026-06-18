@@ -229,8 +229,9 @@ async function fetchGSITile(zoom, x, y) {
 }
 
 /**
- * 国土地理院タイルを 3×3 枚合成し、震源地の正確な座標に赤✕マーカーを描画して
- * PNG Buffer を返す。座標が無効な場合は null を返す。
+ * 国土地理院タイルを 5×5 枚合成し、震源地を画像中央に固定して赤✕マーカーを描画。
+ * 震源地ピクセルを中心に OUTPUT_W×OUTPUT_H でクロップしてから出力するため、
+ * 震源地が常に画像の真ん中に表示される。
  * 出典: 国土地理院 地理院タイル (https://maps.gsi.go.jp/development/ichiran.html)
  */
 async function buildMapAttachment(lat, lon) {
@@ -238,16 +239,18 @@ async function buildMapAttachment(lat, lon) {
 
     const zoom = 6;
     const TILE = 256;
-    const GRID = 3;
+    const HALF = 2;            // 中心タイルから上下左右に2枚 = 5×5
+    const GRID = HALF * 2 + 1; // 5
 
     const { tileX: cx, tileY: cy, pixX: markerPixX, pixY: markerPixY }
         = latLonToTileAndPixel(lat, lon, zoom);
 
-    // 3×3 タイルを並列取得
+    // 5×5 タイルを並列取得
     const fetches = [];
-    for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-            const gx = dx + 1, gy = dy + 1;
+    for (let dy = -HALF; dy <= HALF; dy++) {
+        for (let dx = -HALF; dx <= HALF; dx++) {
+            const gx = dx + HALF; // 0〜4
+            const gy = dy + HALF;
             fetches.push(
                 fetchGSITile(zoom, cx + dx, cy + dy)
                     .then(buf => ({ gx, gy, buf }))
@@ -257,17 +260,18 @@ async function buildMapAttachment(lat, lon) {
     }
     const tiles = await Promise.all(fetches);
 
-    const canvasSize = TILE * GRID; // 768×768
+    const canvasSize = TILE * GRID; // 1280×1280
     const composites = tiles
         .filter(t => t !== null)
         .map(({ gx, gy, buf }) => ({ input: buf, left: gx * TILE, top: gy * TILE }));
 
-    // 震源地マーカーの中心座標（中心タイルのオフセット + タイル内ピクセル）
-    const cx2 = 1 * TILE + markerPixX;
-    const cy2 = 1 * TILE + markerPixY;
+    // 震源地の絶対ピクセル座標（5×5キャンバス内）
+    // 中心タイルは (HALF, HALF) の位置にある
+    const markerAbsX = HALF * TILE + markerPixX;
+    const markerAbsY = HALF * TILE + markerPixY;
 
     // 赤✕ SVG（白縁取り付き）
-    const ARM = 14, SW = 5, PAD = 10;
+    const ARM = 16, SW = 5, PAD = 12;
     const sz  = (ARM + PAD) * 2;
     const h   = sz / 2;
     const markerSvg = Buffer.from(
@@ -280,16 +284,24 @@ async function buildMapAttachment(lat, lon) {
     );
     composites.push({
         input: markerSvg,
-        left: Math.max(0, Math.min(canvasSize - sz, Math.floor(cx2 - h))),
-        top:  Math.max(0, Math.min(canvasSize - sz, Math.floor(cy2 - h))),
+        left: Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsX - h))),
+        top:  Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsY - h))),
     });
+
+    // 出力サイズ（Discord Embed の推奨比率 16:9 に近い横長）
+    const OUT_W = 800, OUT_H = 400;
+
+    // 震源地を中心にクロップする領域を計算
+    // キャンバス内に収まるようにクランプ
+    const cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, Math.floor(markerAbsX - OUT_W / 2)));
+    const cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, Math.floor(markerAbsY - OUT_H / 2)));
 
     return await sharp({
         create: { width: canvasSize, height: canvasSize, channels: 4,
                   background: { r: 220, g: 220, b: 220, alpha: 1 } }
     })
         .composite(composites)
-        .resize(600, 300)
+        .extract({ left: cropLeft, top: cropTop, width: OUT_W, height: OUT_H })
         .png()
         .toBuffer();
 }
