@@ -239,17 +239,34 @@ async function buildMapAttachment(lat, lon) {
 
     const zoom = 6;
     const TILE = 256;
-    const HALF = 2;            // 中心タイルから上下左右に2枚 = 5×5
-    const GRID = HALF * 2 + 1; // 5
+    const HALF = 2;            
+    const GRID = HALF * 2 + 1; 
 
     const { tileX: cx, tileY: cy, pixX: markerPixX, pixY: markerPixY }
         = latLonToTileAndPixel(lat, lon, zoom);
 
-    // 5×5 タイルを並列取得
+    // 震源地の絶対ピクセル座標（1280x1280キャンバス内）
+    const markerAbsX = HALF * TILE + markerPixX;
+    const markerAbsY = HALF * TILE + markerPixY;
+
+    // 出力サイズ（横500px, 縦400px）
+    const OUT_W = 500, OUT_H = 400;
+
+    // クロップ領域の計算：震源地(markerAbsX, markerAbsY)を中央に置く
+    // つまり、左上は「震源地 - サイズの半分」
+    let cropLeft = Math.floor(markerAbsX - OUT_W / 2);
+    let cropTop  = Math.floor(markerAbsY - OUT_H / 2);
+
+    // キャンバス外にはみ出さないよう調整
+    const canvasSize = TILE * GRID;
+    cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, cropLeft));
+    cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, cropTop));
+
+    // タイル取得
     const fetches = [];
     for (let dy = -HALF; dy <= HALF; dy++) {
         for (let dx = -HALF; dx <= HALF; dx++) {
-            const gx = dx + HALF; // 0〜4
+            const gx = dx + HALF;
             const gy = dy + HALF;
             fetches.push(
                 fetchGSITile(zoom, cx + dx, cy + dy)
@@ -260,17 +277,11 @@ async function buildMapAttachment(lat, lon) {
     }
     const tiles = await Promise.all(fetches);
 
-    const canvasSize = TILE * GRID; // 1280×1280
     const composites = tiles
         .filter(t => t !== null)
         .map(({ gx, gy, buf }) => ({ input: buf, left: gx * TILE, top: gy * TILE }));
 
-    // 震源地の絶対ピクセル座標（5×5キャンバス内）
-    // 中心タイルは (HALF, HALF) の位置にあるため、そこにタイル内オフセットを足す
-    const markerAbsX = HALF * TILE + markerPixX;
-    const markerAbsY = HALF * TILE + markerPixY;
-
-    // 赤✕ SVG（白縁取り付き）
+    // 赤✕ SVG（マーカー）
     const ARM = 16, SW = 5, PAD = 12;
     const sz  = (ARM + PAD) * 2;
     const h   = sz / 2;
@@ -284,17 +295,9 @@ async function buildMapAttachment(lat, lon) {
     );
     composites.push({
         input: markerSvg,
-        left: Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsX - h))),
-        top:  Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsY - h))),
+        left: Math.floor(markerAbsX - h),
+        top:  Math.floor(markerAbsY - h),
     });
-
-    // 出力サイズ（ご希望の「縦4×横5」の比率に設定）
-    const OUT_W = 500, OUT_H = 400; // 横500px, 縦400px (5:4)
-
-    // 震源地を中心にクロップする領域を計算
-    // OUT_W / 2 を引くことで、震源地(markerAbsX/Y)が画像のど真ん中になります
-    const cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, Math.floor(markerAbsX - OUT_W / 2)));
-    const cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, Math.floor(markerAbsY - OUT_H / 2)));
 
     return await sharp({
         create: { width: canvasSize, height: canvasSize, channels: 4,
