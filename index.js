@@ -230,7 +230,7 @@ function latLonToTileAndPixel(lat, lon, zoom) {
  * 出典: 国土地理院 地理院タイル
  */
 async function fetchGSITile(zoom, x, y) {
-    const url = `https://cyberjapandata.gsi.go.jp/xyz/pale/${zoom}/${x}/${y}.png`;
+    const url = `https://cyberjapandata.gsi.go.jp/xyz/blank/${zoom}/${x}/${y}.png`;
     const res = await fetch(url, {
         headers: { 'User-Agent': 'JYRACDiscordBot/1.0 (earthquake-notify)' }
     });
