@@ -797,10 +797,9 @@ function startWeatherMonitor() {
                 const link = linkMatch ? linkMatch[1].trim() : null;
 
                                // --- 🌟 画像URLの抽出（タグを消す前に取得する必要があります） ---
+                                // --- 🌟 画像URLの抽出 ---
                 let imageUrl = null;
-                // description内の<img>タグから画像URLを抽出
                 const imgMatch = description.match(/<img[^>]+src="([^">]+)"/);
-                // もし <enclosure> などのRSS標準画像タグがある場合用
                 const enclosureMatch = item.match(/<enclosure[^>]+url="([^">]+)"/);
                 
                 if (imgMatch) {
@@ -810,26 +809,11 @@ function startWeatherMonitor() {
                 }
 
                 // --- 🌟 情報を抜き出す処理 ---
-                // 都道府県の抽出 (例: 【東京都 気象警報・注意報】 -> 東京都)
-                let prefecture = "不明";
-                const prefMatch = title.match(/【(.*?)\s/) || description.match(/【(.*?)\s/); 
-                if (prefMatch) {
-                    prefecture = prefMatch[1];
-                }
-
-                // 警報・注意報の抽出 (本文から「大雨警報」「洪水注意報」などを探し出す)
-                let warningStr = "詳細を本文で確認してください";
-                const warningMatch = description.match(/([^\s>]+(?:特別警報|警報|注意報))/g);
-                if (warningMatch) {
-                    // 重複を削除して結合
-                    warningStr = [...new Set(warningMatch)].join('\n');
-                }
-
-                // 警戒レベルの抽出 (本文に警戒レベル〇 とあれば抜き出す)
-                let alertLevel = "-";
-                const levelMatch = description.match(/警戒レベル([1-5１-５])/);
-                if (levelMatch) {
-                    alertLevel = `レベル${levelMatch[1]}`;
+                // 都道府県・地方の抽出 (例: 【東京都 気象警報・注意報】 -> 東京都、 【関東甲信地方...】 -> 関東甲信地方)
+                let area = "全国";
+                const areaMatch = title.match(/【(.*?(?:都|道|府|県|地方|地域|管内))\s/) || description.match(/【(.*?(?:都|道|府|県|地方|地域|管内))\s/); 
+                if (areaMatch) {
+                    area = areaMatch[1];
                 }
 
                 // 不要なHTMLタグやハッシュタグの除去
@@ -848,24 +832,29 @@ function startWeatherMonitor() {
                     continue; 
                 }
 
-                // 発行日時のフォーマット作成 (例: 24/05/20 15:30)
-                const pubTs = pubTsMs ? Math.floor(pubTsMs / 1000) : null;
-                const d = pubTs ? new Date(pubTs * 1000) : new Date();
-                const formattedDate = `${String(d.getFullYear()).slice(2)}/${String(d.getMonth()+1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                // --- 🌟 日本標準時(JST)のフォーマット作成 ---
+                const d = pubTsMs ? new Date(pubTsMs) : new Date();
+                // サーバーの地域設定に関わらず、強制的に日本時間(Asia/Tokyo)でフォーマットする
+                const formatter = new Intl.DateTimeFormat('ja-JP', {
+                    timeZone: 'Asia/Tokyo',
+                    year: 'numeric', month: '2-digit', day: '2-digit',
+                    hour: '2-digit', minute: '2-digit'
+                });
+                const formattedDate = formatter.format(d).replace(/\//g, '/'); // 例: 2024/05/20 15:30
 
                 // --- 🌟 Embed生成（表組みと文字の巨大化） ---
                 const embed = new EmbedBuilder()
                     .setTitle(`🌦️ NERV 気象情報`)
-                    // DiscordのMarkdown機能（#）を使って文字を特大にする
-                    .setDescription(`# ${prefecture} 気象情報\n\n${description.slice(0, 1000)}`)
+                    // Markdown機能（#）を使って対象地域を大きく見出し表示
+                    .setDescription(`# ${area}\n\n${description.slice(0, 1000)}`)
                     .setColor(0x2B90D9)
-                    // addFields を使うと横並びの表形式になります（inline: true）
+                    // 警報やレベルは画像を見るように誘導する
                     .addFields(
-                        { name: '都道府県', value: `**${prefecture}**`, inline: true },
-                        { name: '警報・注意報', value: `**${warningStr}**`, inline: true },
+                        { name: '対象地域', value: `**${area}**`, inline: true },
+                        { name: '警報・注意報', value: `**⚠️ 下部画像を参照**`, inline: true },
                         { name: '\u200b', value: '\u200b', inline: true }, // 段落合わせの空欄
-                        { name: '警戒レベル', value: `**${alertLevel}**`, inline: true },
-                        { name: '発行日時', value: `**${formattedDate}**`, inline: true },
+                        { name: '警戒レベル', value: `**⚠️ 下部画像を参照**`, inline: true },
+                        { name: '発表日時 (JST)', value: `**${formattedDate}**`, inline: true },
                         { name: '\u200b', value: '\u200b', inline: true }
                     )
                     .setURL(link || null)
@@ -876,23 +865,6 @@ function startWeatherMonitor() {
                     embed.setImage(imageUrl);
                 }
 
-                // 設定されている全てのチャンネルへ配信
-                const channelIds = await getNotifyChannels().catch(() => []);
-                for (const channelId of channelIds) {
-                    const ch = await client.channels.fetch(channelId).catch(() => null);
-                    if (!ch) continue;
-                    await ch.send({ embeds: [embed] }).catch(console.error);
-                }
-            }
-        } catch (err) {
-            console.error('[気象情報監視] ポーリングエラー:', err.message);
-        }
-    }
-
-    console.log('[気象情報監視] HTTPポーリング開始 (60秒間隔)');
-    poll(); // 初回即実行
-    setInterval(poll, POLL_INTERVAL);
-}
 
 // ─── スラッシュコマンド定義 ────────────────────────────────────
 
