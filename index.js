@@ -754,7 +754,7 @@ function parseTsunamiXML(xmlText, reportNo) {
 
 function startWeatherMonitor() {
     // ★ ここにNERVの情報を取得していたRSSのURLを入力してください
-    const RSS_URL = 'ここに元のRSS_URLを入れる'; 
+    const RSS_URL = 'https://unnerv.jp/@UN_NERV.rss'; 
     const POLL_INTERVAL = 60_000; // 60秒ごとに確認
 
     const seenItems = new Set();
