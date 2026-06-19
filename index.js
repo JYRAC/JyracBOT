@@ -39,6 +39,16 @@ const db = admin.firestore();
 const broadcastRoleMap = new Map();
 const ticketMessages = new Map();
 
+// --- 🌟 観測点データの読み込み ---
+let stationsData = {};
+try {
+    const rawData = fs.readFileSync(path.join(__dirname, 'stations.json'));
+    stationsData = JSON.parse(rawData);
+    console.log(`[システム] 観測点データ(stations.json)を読み込みました。`);
+} catch (error) {
+    console.warn(`[警告] stations.json が見つかりません。震度の描画はスキップされます。`);
+}
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -234,13 +244,42 @@ async function fetchGSITile(zoom, x, y) {
  * 震源地ピクセルを中心に extract() でクロップするため、常に真ん中に✕が表示される。
  * 出典: 国土地理院 地理院タイル (https://maps.gsi.go.jp/development/ichiran.html)
  */
-async function buildMapAttachment(lat, lon) {
+/**
+ * 震度のSVGスタンプ（角丸の四角形に文字）を生成する
+ */
+function getScaleSvg(scale) {
+    const scaleMap = {
+        '10': { text: '1', bg: '#99CCFF', c: '#000000' },
+        '20': { text: '2', bg: '#00AAFF', c: '#FFFFFF' },
+        '30': { text: '3', bg: '#00DD00', c: '#FFFFFF' },
+        '40': { text: '4', bg: '#FFFF00', c: '#000000' },
+        '45': { text: '5弱', bg: '#FFAA00', c: '#000000' },
+        '50': { text: '5強', bg: '#FF6600', c: '#FFFFFF' },
+        '55': { text: '6弱', bg: '#FF2200', c: '#FFFFFF' },
+        '60': { text: '6強', bg: '#CC0000', c: '#FFFFFF' },
+        '70': { text: '7', bg: '#990000', c: '#FFFFFF' }
+    };
+    const s = scaleMap[String(scale)];
+    if (!s) return null;
+    return Buffer.from(
+        `<svg width="24" height="24" xmlns="http://www.w3.org/2000/svg">
+            <rect width="24" height="24" rx="4" fill="${s.bg}" stroke="#ffffff" stroke-width="1.5"/>
+            <text x="12" y="17" font-family="sans-serif" font-size="13" font-weight="bold" fill="${s.c}" text-anchor="middle">${s.text}</text>
+        </svg>`
+    );
+}
+
+/**
+ * 国土地理院タイルを 3×3 枚合成し、震源地を中心にクロップして返す。
+ * ★修正: 引数に points (各観測点の震度データ配列) を追加
+ */
+async function buildMapAttachment(lat, lon, points = null) {
     if (lat == null || lon == null || lat === -200 || lon === -200) return null;
 
     const zoom = 9;   // zoom=9: 3×3タイルで約2°×1.7°（震源地周辺のみ表示）
     const TILE = 256;
-    const HALF = 1;                  // 中心タイルから上下左右1枚 = 3×3
-    const GRID = HALF * 2 + 1;      // 3
+    const HALF = 1;   // 中心タイルから上下左右1枚 = 3×3
+    const GRID = HALF * 2 + 1;
 
     const { tileX: cx, tileY: cy, pixX: markerPixX, pixY: markerPixY }
         = latLonToTileAndPixel(lat, lon, zoom);
@@ -259,12 +298,42 @@ async function buildMapAttachment(lat, lon) {
         }
     }
     const tiles = await Promise.all(fetches);
-
     const canvasSize = TILE * GRID; // 768×768
 
     const composites = tiles
         .filter(t => t !== null)
         .map(({ gx, gy, buf }) => ({ input: buf, left: gx * TILE, top: gy * TILE }));
+
+    // --- 🌟 各観測点の震度スタンプを地図上に配置 ---
+    if (points && Array.isArray(points) && typeof stationsData !== 'undefined') {
+        for (const pt of points) {
+            // stations.json から観測点名(addr)や都道府県(pref)で緯度経度を検索
+            let st = stationsData[pt.addr] || (stationsData[pt.pref] && stationsData[pt.pref][pt.addr]);
+            if (!st || st.lat == null || st.lon == null) continue;
+
+            // 観測点の緯度経度を、現在のズームレベルでの絶対タイル座標に変換
+            const { tileX: px, tileY: py, pixX: pPixX, pixY: pPixY } = latLonToTileAndPixel(st.lat, st.lon, zoom);
+            
+            // 中心タイル(cx, cy)を基準とした、3x3キャンバス内での相対的な位置を計算
+            const diffX = px - (cx - HALF);
+            const diffY = py - (cy - HALF);
+
+            // キャンバス（ダウンロードした9枚の地図）の範囲内に収まっている場合のみスタンプを押す
+            if (diffX >= 0 && diffX < GRID && diffY >= 0 && diffY < GRID) {
+                const absX = diffX * TILE + pPixX;
+                const absY = diffY * TILE + pPixY;
+                
+                const svgBuf = getScaleSvg(pt.scale);
+                if (svgBuf) {
+                    composites.push({
+                        input: svgBuf,
+                        left: Math.max(0, Math.min(canvasSize - 24, Math.floor(absX - 12))),
+                        top: Math.max(0, Math.min(canvasSize - 24, Math.floor(absY - 12))),
+                    });
+                }
+            }
+        }
+    }
 
     // 震源地の絶対ピクセル座標（3×3キャンバス内）
     const markerAbsX = HALF * TILE + markerPixX;
@@ -288,24 +357,18 @@ async function buildMapAttachment(lat, lon) {
         top:  Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsY - h))),
     });
 
-    // 出力サイズ: キャンバス幅いっぱい×500 で震源地を中心にクロップ
-    // ※ OUT_W はキャンバスサイズ(768)を超えないようにする（超えると extract がエラーになる）
     const OUT_W = canvasSize, OUT_H = 500;
     const cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, Math.floor(markerAbsX - OUT_W / 2)));
     const cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, Math.floor(markerAbsY - OUT_H / 2)));
 
     return await sharp({
-        create: { width: canvasSize, height: canvasSize, channels: 4,
-                  background: { r: 220, g: 220, b: 220, alpha: 1 } }
+        create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 220, g: 220, b: 220, alpha: 1 } }
     })
         .composite(composites)
         .extract({ left: cropLeft, top: cropTop, width: OUT_W, height: OUT_H })
         .png()
         .toBuffer();
 }
-
-
-
 /**
  * JST形式 "YYYY/MM/DD HH:mm:ss" → Unix秒 に変換
  */
