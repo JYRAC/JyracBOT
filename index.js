@@ -276,7 +276,7 @@ function getScaleSvg(scale) {
 async function buildMapAttachment(lat, lon, points = null) {
     if (lat == null || lon == null || lat === -200 || lon === -200) return null;
 
-    const zoom = 9;   // zoom=9: 3×3タイルで約2°×1.7°（震源地周辺のみ表示）
+    const zoom = 8;   // zoom=9: 3×3タイルで約2°×1.7°（震源地周辺のみ表示）
     const TILE = 256;
     const HALF = 1;   // 中心タイルから上下左右1枚 = 3×3
     const GRID = HALF * 2 + 1;
