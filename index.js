@@ -237,7 +237,7 @@ async function fetchGSITile(zoom, x, y) {
 async function buildMapAttachment(lat, lon) {
     if (lat == null || lon == null || lat === -200 || lon === -200) return null;
 
-    const zoom = 9;   // zoom=6だと1タイルが広すぎて中国が映るためzoom=7を使用
+    const zoom = 9;   // zoom=9: 3×3タイルで約2°×1.7°（震源地周辺のみ表示）
     const TILE = 256;
     const HALF = 1;                  // 中心タイルから上下左右1枚 = 3×3
     const GRID = HALF * 2 + 1;      // 3
@@ -336,6 +336,29 @@ function jstToUnixMs(jstStr) {
 // eventKey = 発表元の発表日時（issue.time の地震発生時刻部分）
 const tsunamiEventCounter = new Map();
 
+// EEW追跡マップ: eventKey(originTime+震源地名) → 最終serial
+// 同じ地震について地震情報(code:551)が来たら finishedEEWEvents に追加し、以降のEEWは「最終報」として送信して終了する
+const eewLastSerial = new Map();
+const finishedEEWEvents = new Set();
+
+/**
+ * EEWのイベントキーを生成（originTime + 震源地名で同一地震を識別）
+ */
+function getEEWEventKey(data) {
+    const origin = data.earthquake?.originTime ?? '';
+    const name = data.earthquake?.hypocenter?.name ?? '';
+    return `${origin}__${name}`;
+}
+
+/**
+ * 地震情報(551)のイベントキーを生成（同じ方式で対応するEEWイベントを探す）
+ */
+function getQuakeEventKey(data) {
+    const time = data.earthquake?.time ?? '';
+    const name = data.earthquake?.hypocenter?.name ?? '';
+    return `${time}__${name}`;
+}
+
 const INTENSITY_LABEL = {
     '10': '1', '20': '2', '30': '3', '40': '4',
     '45': '5弱', '50': '5強', '55': '6弱', '60': '6強', '70': '7',
@@ -355,7 +378,13 @@ function getTsunamiLabel(code) {
     return labels[code] ?? code;
 }
 
-function buildEEWEmbed(data) {
+/**
+ * EEW(緊急地震速報)のEmbedを生成
+ * @param {object} data - code:556のデータ
+ * @param {boolean} isLastReport - この地震について確定情報(地震情報/code:551)が
+ *                                  既に届いている場合は true（最終報として表示）
+ */
+function buildEEWEmbed(data, isLastReport = false) {
     // EEW(code:556) のフィールドパス: data.earthquake.hypocenter, data.issue.serial
     const hypo = data.earthquake?.hypocenter ?? {};
     const rawScale = data.areas?.[0]?.scaleFrom;
@@ -365,17 +394,20 @@ function buildEEWEmbed(data) {
     const color = INTENSITY_COLOR[intensity] ?? 0xFF0000;
     const serial = data.issue?.serial ?? '?';
     const originTs = jstToUnix(data.earthquake?.originTime);
+    const serialLabel = isLastReport ? `第${serial}報（最終）` : `第${serial}報`;
 
     const embed = new EmbedBuilder()
         .setTitle('🚨 緊急地震速報')
         .setColor(color)
-        .setDescription('**強い揺れに備えてください！**')
+        .setDescription(isLastReport
+            ? '**地震が発生しました。今後は地震情報をご確認ください。**'
+            : '**強い揺れに備えてください！**')
         .addFields(
             { name: '震源地', value: hypo.name ?? '不明', inline: true },
             { name: '最大予測震度', value: intensity !== '不明' ? `震度 ${intensity}` : '不明', inline: true },
             { name: 'マグニチュード', value: (hypo.magnitude != null && hypo.magnitude !== -1) ? `M${hypo.magnitude}` : '不明', inline: true },
             { name: '深さ', value: (hypo.depth != null && hypo.depth !== -1) ? `${Math.floor(hypo.depth)} km` : '不明', inline: true },
-            { name: '第N報', value: `第${serial}報`, inline: true },
+            { name: '第N報', value: serialLabel, inline: true },
         )
         .setTimestamp(originTs ? new Date(originTs * 1000) : new Date())
         .setFooter({ text: 'P2P地震情報 | 緊急地震速報' });
@@ -527,6 +559,14 @@ function startEarthquakeMonitor() {
                     const hypo = data.earthquake?.hypocenter ?? {};
                     await broadcast(buildQuakeEmbed(data), hypo.latitude, hypo.longitude);
 
+                    // この地震に対応するEEW追跡があれば「終了」マークを付ける
+                    // （以後その地震のEEW速報は来ても再通知しない）
+                    const quakeKey = getQuakeEventKey(data);
+                    finishedEEWEvents.add(quakeKey);
+                    if (finishedEEWEvents.size > 50) {
+                        finishedEEWEvents.delete(finishedEEWEvents.values().next().value);
+                    }
+
                 } else if (data.code === 552) {
                     // 津波予報: 報数を追跡（震源座標なし）
                     const eventKey = data.issue?.time ?? data.id;
@@ -540,8 +580,18 @@ function startEarthquakeMonitor() {
                 } else if (data.code === 556) {
                     // 緊急地震速報: 震源座標を渡す
                     if (data.cancelled) continue;
+
+                    const eewKey = getEEWEventKey(data);
+                    // 既に地震情報(551)を受信済みのイベントは打ち切り（再通知しない）
+                    if (finishedEEWEvents.has(eewKey)) continue;
+
+                    eewLastSerial.set(eewKey, data.issue?.serial ?? 0);
+                    if (eewLastSerial.size > 50) {
+                        eewLastSerial.delete(eewLastSerial.keys().next().value);
+                    }
+
                     const hypo = data.earthquake?.hypocenter ?? {};
-                    await broadcast(buildEEWEmbed(data), hypo.latitude, hypo.longitude);
+                    await broadcast(buildEEWEmbed(data, false), hypo.latitude, hypo.longitude);
                 }
             }
         } catch (err) {
@@ -551,6 +601,239 @@ function startEarthquakeMonitor() {
 
     console.log('[地震監視] HTTPポーリング開始 (30秒間隔)');
     poll(); // 初回即実行
+    setInterval(poll, POLL_INTERVAL);
+}
+
+// ─── 気象庁 津波詳細情報モジュール（到達予想時刻・高さ・実況） ──────────────
+// P2P地震情報には津波の「到達予想時刻」「予想の高さ」「実況」が含まれないため、
+// 気象庁が無料公開しているAtomフィード(PULL型)経由でVTSE41電文を直接取得する。
+// 出典: 気象庁 防災情報XMLフォーマット形式電文（PULL型） https://xml.kishou.go.jp/xmlpull.html
+
+const JMA_EQVOL_FEED = 'https://www.data.jma.go.jp/developer/xml/feed/eqvol.xml';
+
+// 簡易XMLタグ抽出（正規表現ベース。属性付きタグにも対応）
+function xmlTag(xml, tagName) {
+    const m = xml.match(new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)</${tagName}>`));
+    return m ? m[1].trim() : null;
+}
+function xmlTagAll(xml, tagName) {
+    const re = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)</${tagName}>`, 'g');
+    const out = [];
+    let m;
+    while ((m = re.exec(xml)) !== null) out.push(m[1].trim());
+    return out;
+}
+function xmlAttr(tagXml, attrName) {
+    const m = tagXml.match(new RegExp(`${attrName}="([^"]*)"`));
+    return m ? m[1] : null;
+}
+// <Item>...</Item> ブロックを丸ごと抽出（ネストタグ込み）
+function xmlBlocks(xml, tagName) {
+    const re = new RegExp(`<${tagName}(?:\\s[^>]*)?>[\\s\\S]*?</${tagName}>`, 'g');
+    return xml.match(re) ?? [];
+}
+
+const tsunamiGradeLabelJMA = {
+    '大津波警報': '🚨 大津波警報',
+    '津波警報':   '⚠️ 津波警報',
+    '津波注意報': '🔵 津波注意報',
+};
+
+/**
+ * VTSE41（津波警報・注意報・予報）XML電文をパースしてDiscord Embedを生成
+ */
+function parseTsunamiXML(xmlText, reportNo) {
+    const isCancel = /<InfoType>取消<\/InfoType>/.test(xmlText);
+    const reportDateTime = xmlTag(xmlText, 'ReportDateTime');
+    const headline = xmlTag(xmlText, 'Headline')?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+    const embed = new EmbedBuilder()
+        .setColor(isCancel ? 0x00AAFF : 0xFF3300)
+        .setFooter({ text: '気象庁 津波警報・注意報・予報 (VTSE41)' })
+        .setTimestamp();
+
+    if (isCancel) {
+        embed.setTitle('🌊 津波警報・注意報 解除')
+             .setDescription(headline || '津波警報・注意報がすべて解除されました。');
+        return embed;
+    }
+
+    embed.setTitle(`🌊 津波警報・注意報・予報 第${reportNo}報`);
+    if (headline) embed.setDescription(headline);
+
+    // 発表時刻
+    if (reportDateTime) {
+        const ts = jstToUnix(reportDateTime.replace('T', ' ').replace(/\+09:00$/, '').replace(/-/g, '/'));
+        embed.addFields({ name: '発表時刻', value: ts ? `<t:${ts}:F>` : reportDateTime, inline: false });
+    }
+
+    // <Item> ごとに 予報区・グレード・高さ・到達予想時刻 / 実況 を取得
+    const items = xmlBlocks(xmlText, 'Item');
+    const lines = [];
+
+    for (const item of items.slice(0, 15)) { // Discordフィールド数制限を考慮し最大15件
+        const areaName = xmlTag(item, 'Name');
+        const grade = xmlTag(item, 'Category')
+            ? xmlTag(xmlTag(item, 'Category') ?? '', 'Kind') ?? null
+            : null;
+        // Categoryブロック内のKind/Nameを再取得（入れ子構造のため個別抽出）
+        const categoryBlock = (item.match(/<Category>[\s\S]*?<\/Category>/) ?? [''])[0];
+        const kindName = xmlTag(categoryBlock, 'Name'); // 例: 大津波警報 / 津波警報 / 津波注意報
+
+        // 予想される高さ（MaxHeight内のTsunamiHeight）
+        const maxHeightBlock = (item.match(/<MaxHeight>[\s\S]*?<\/MaxHeight>/) ?? [''])[0];
+        const heightTagMatch = maxHeightBlock.match(/<jmx_eb:TsunamiHeight[^>]*description="([^"]*)"[^>]*\/?>/);
+        const heightDesc = heightTagMatch ? heightTagMatch[1] : null;
+
+        // 到達予想時刻（ArrivalTime）
+        const arrivalTime = xmlTag(item, 'ArrivalTime');
+        // 既に到達中/到達確認（Condition）
+        const condition = xmlTag(item, 'Condition');
+
+        if (!areaName) continue;
+
+        const gradeLabel = tsunamiGradeLabelJMA[kindName] ?? kindName ?? '津波情報';
+        let line = `**${areaName}**（${gradeLabel}）`;
+        if (heightDesc) line += `\n　予想の高さ: **${heightDesc}**`;
+        if (condition) {
+            line += `\n　状況: ${condition}`;
+        } else if (arrivalTime) {
+            const ts = jstToUnix(arrivalTime.replace('T', ' ').replace(/\+09:00$/, '').replace(/-/g, '/'));
+            line += `\n　到達予想時刻: ${ts ? `<t:${ts}:t>` : arrivalTime}`;
+        }
+        lines.push(line);
+    }
+
+    if (lines.length > 0) {
+        // 4000文字制限を考慮して分割
+        let buf = '';
+        let fieldIdx = 1;
+        for (const line of lines) {
+            if ((buf + '\n\n' + line).length > 1000) {
+                embed.addFields({ name: `対象地域 ${fieldIdx}`, value: buf, inline: false });
+                buf = line;
+                fieldIdx++;
+            } else {
+                buf = buf ? `${buf}\n\n${line}` : line;
+            }
+        }
+        if (buf) embed.addFields({ name: fieldIdx === 1 ? '対象地域' : `対象地域 ${fieldIdx}`, value: buf, inline: false });
+    }
+
+    // 津波観測（実況）情報があれば追加
+    const obsBlocks = xmlBlocks(xmlText, 'Observation');
+    if (obsBlocks.length > 0) {
+        const obsLines = [];
+        for (const obsXml of obsBlocks) {
+            const stations = xmlBlocks(obsXml, 'Station');
+            for (const st of stations.slice(0, 10)) {
+                const stName = xmlTag(st, 'Name');
+                const maxH = (st.match(/<MaxHeight>[\s\S]*?<\/MaxHeight>/) ?? [''])[0];
+                const hMatch = maxH.match(/<jmx_eb:TsunamiHeight[^>]*description="([^"]*)"[^>]*\/?>/);
+                const hDesc = hMatch ? hMatch[1] : null;
+                const obsTime = xmlTag(maxH, 'DateTime');
+                if (stName && hDesc) {
+                    const ts = obsTime ? jstToUnix(obsTime.replace('T', ' ').replace(/\+09:00$/, '').replace(/-/g, '/')) : null;
+                    obsLines.push(`**${stName}**: ${hDesc}${ts ? `（<t:${ts}:t> 観測）` : ''}`);
+                }
+            }
+        }
+        if (obsLines.length > 0) {
+            embed.addFields({ name: '🌊 観測実況（到達後の実測値）', value: obsLines.join('\n').slice(0, 1024), inline: false });
+        }
+    }
+
+    return embed;
+}
+
+/**
+ * 気象庁の地震火山Atomフィードをポーリングし、
+ * 津波警報・注意報・予報（VTSE41）のXMLを検出してDiscordに詳細通知する。
+ */
+function startJMATsunamiMonitor() {
+    const POLL_INTERVAL = 30_000;
+    const startedAt = Date.now();
+    const seenEntryIds = new Set();
+    const jmaTsunamiReportCounter = new Map(); // eventKey(EventID) → 報数
+
+    async function getNotifyChannels() {
+        const snap = await db.collection('earthquake_settings').get();
+        return snap.docs.map(d => d.data().channelId).filter(Boolean);
+    }
+
+    async function broadcastJMA(embed) {
+        const channelIds = await getNotifyChannels().catch(() => []);
+        for (const channelId of channelIds) {
+            const ch = await client.channels.fetch(channelId).catch(() => null);
+            if (ch) await ch.send({ embeds: [embed] }).catch(console.error);
+        }
+    }
+
+    async function poll() {
+        try {
+            const res = await fetch(JMA_EQVOL_FEED, {
+                headers: { 'User-Agent': 'JYRACDiscordBot/1.0 (tsunami-notify)' }
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const feedXml = await res.text();
+
+            const entries = xmlBlocks(feedXml, 'entry');
+
+            for (const entry of entries.reverse()) { // 古い順
+                const id = xmlTag(entry, 'id');
+                const title = xmlTag(entry, 'title');
+                const updated = xmlTag(entry, 'updated'); // ISO8601 UTC
+                const linkMatch = entry.match(/<link[^>]*href="([^"]*)"[^>]*\/?>/);
+                const xmlUrl = linkMatch ? linkMatch[1] : null;
+
+                if (!id || !xmlUrl) continue;
+                if (seenEntryIds.has(id)) continue;
+                seenEntryIds.add(id);
+                if (seenEntryIds.size > 200) {
+                    seenEntryIds.delete(seenEntryIds.values().next().value);
+                }
+
+                // 起動前のエントリはスキップ
+                if (updated) {
+                    const updatedMs = new Date(updated).getTime();
+                    if (!isNaN(updatedMs) && updatedMs < startedAt - 60_000) continue;
+                }
+
+                // タイトルで津波警報・注意報・予報のみ対象にする
+                if (!title || !title.includes('津波警報') && !title.includes('津波予報') && !title.includes('津波情報')) continue;
+
+                // 該当XMLを取得してパース
+                const xmlRes = await fetch(xmlUrl, {
+                    headers: { 'User-Agent': 'JYRACDiscordBot/1.0 (tsunami-notify)' }
+                }).catch(() => null);
+                if (!xmlRes || !xmlRes.ok) continue;
+                const xmlText = await xmlRes.text();
+
+                // 電文種別がVTSE41（津波警報・注意報・予報）かを確認
+                if (!xmlText.includes('<Title>津波警報') && !xmlText.includes('<Title>津波予報') && !title.includes('津波')) {
+                    // タイトルに「津波」とあれば対象として処理続行
+                }
+
+                const eventId = xmlTag(xmlText, 'EventID') ?? id;
+                const reportNo = (jmaTsunamiReportCounter.get(eventId) ?? 0) + 1;
+                jmaTsunamiReportCounter.set(eventId, reportNo);
+                if (jmaTsunamiReportCounter.size > 50) {
+                    jmaTsunamiReportCounter.delete(jmaTsunamiReportCounter.keys().next().value);
+                }
+
+                const embed = parseTsunamiXML(xmlText, reportNo).catch
+                    ? parseTsunamiXML(xmlText, reportNo)
+                    : parseTsunamiXML(xmlText, reportNo);
+
+                await broadcastJMA(embed);
+            }
+        } catch (err) {
+            console.error('[気象庁津波監視] ポーリングエラー:', err.message);
+        }
+    }
+
+    console.log('[気象庁津波監視] HTTPポーリング開始 (30秒間隔)');
+    poll();
     setInterval(poll, POLL_INTERVAL);
 }
 
@@ -690,9 +973,11 @@ const commands = [
                 .setDescription('通知の種類')
                 .setRequired(true)
                 .addChoices(
-                    { name: '🌏 地震情報', value: 'quake' },
-                    { name: '🚨 緊急地震速報 (EEW)', value: 'eew' },
-                    { name: '🌊 津波予報', value: 'tsunami' },
+                    { name: '🌏 地震情報のみ', value: 'quake' },
+                    { name: '🚨 EEW→（30秒後）地震情報 の連続テスト', value: 'sequence' },
+                    { name: '🚨 緊急地震速報 (EEW) のみ', value: 'eew' },
+                    { name: '🌊 津波予報（P2P簡易版）', value: 'tsunami' },
+                    { name: '🌊 津波警報・注意報（気象庁詳細版）', value: 'tsunami_jma' },
                 )
         )
         .addStringOption(o =>
@@ -710,6 +995,16 @@ const commands = [
         )
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 
+    // 16. NERV気象情報検索 ★追加
+    new SlashCommandBuilder()
+        .setName('weather-nerv')
+        .setDescription('特務機関NERVの気象警報・注意報など最新情報を都道府県名で検索します')
+        .addStringOption(o =>
+            o.setName('prefecture')
+                .setDescription('都道府県名（例: 東京都、大阪府、福岡県）')
+                .setRequired(true)
+        ),
+
 ].map(c => c.toJSON());
 
 // --- Bot 起動イベント ---
@@ -718,7 +1013,7 @@ client.once(Events.ClientReady, async () => {
 
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('--- All 15 Commands Registered ---');
+        console.log('--- All 16 Commands Registered ---');
     } catch (error) {
         console.error(error);
     }
@@ -733,6 +1028,7 @@ client.once(Events.ClientReady, async () => {
 
     // 地震通知モニター開始 ★追加
     startEarthquakeMonitor();
+    startJMATsunamiMonitor();
 
     console.log(`Logged in as ${client.user.tag}`);
 });
@@ -994,6 +1290,7 @@ client.on(Events.InteractionCreate, async interaction => {
                     { label: '/export (チャンネルエクスポート)', value: 'h_export' },
                     { label: '/earthquake-setup (地震通知設定)', value: 'h_earthquake' },
                     { label: '/earthquake-test (疑似地震テスト)', value: 'h_eqtest' }, // ★追加
+                    { label: '/weather-nerv (NERV気象情報)', value: 'h_nerv' }, // ★追加
                 ]);
 
             await interaction.reply({
@@ -1120,16 +1417,60 @@ client.on(Events.InteractionCreate, async interaction => {
             const loc = LOCATIONS[locKey];
             const type = options.getString('type');
 
-            // 疑似データを作成して各 build 関数に渡す
-            let embed;
-            let testLat = loc.lat, testLon = loc.lon;
+            // 通知先チャンネルを解決
+            const snap = await db.collection('earthquake_settings').doc(interaction.guild.id).get();
+            const notifyChannelId = snap.exists ? snap.data().channelId : null;
+            const targetChannel = notifyChannelId
+                ? await client.channels.fetch(notifyChannelId).catch(() => null)
+                : interaction.channel;
 
-            if (type === 'quake') {
-                // 地震情報の疑似データ
-                const fakeData = {
+            if (!targetChannel) {
+                await interaction.editReply('❌ 通知チャンネルを取得できませんでした。');
+                sendCommandLog(interaction, commandName);
+                return;
+            }
+
+            const nowJST = () => new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
+                                          .replace(/\//g, '/').replace(',', '');
+
+            // 共通: Embedに地図を添付して送信するヘルパー
+            async function sendWithMap(embed, lat, lon) {
+                const payload = { embeds: [embed] };
+                if (lat != null && lon != null) {
+                    const buf = await buildMapAttachment(lat, lon).catch(() => null);
+                    if (buf) {
+                        const attachment = new AttachmentBuilder(buf, { name: 'map.png' });
+                        embed.setImage('attachment://map.png');
+                        payload.files = [attachment];
+                    }
+                }
+                await targetChannel.send(payload).catch(console.error);
+            }
+
+            // 疑似 EEW データ生成
+            function makeFakeEEW(serial) {
+                return {
                     earthquake: {
-                        time: new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
-                                        .replace(/\//g, '/').replace(',', ''),
+                        originTime: nowJST(),
+                        hypocenter: {
+                            name:      loc.name,
+                            latitude:  loc.lat,
+                            longitude: loc.lon,
+                            depth:     loc.depth,
+                            magnitude: loc.mag,
+                        },
+                    },
+                    issue: { serial },
+                    areas: [{ scaleFrom: 50 }],
+                    cancelled: false,
+                };
+            }
+
+            // 疑似 地震情報（確定報）データ生成
+            function makeFakeQuake() {
+                return {
+                    earthquake: {
+                        time: nowJST(),
                         hypocenter: {
                             name: loc.name,
                             latitude:  loc.lat,
@@ -1141,35 +1482,46 @@ client.on(Events.InteractionCreate, async interaction => {
                         domesticTsunami: 'None',
                     },
                 };
-                embed = buildQuakeEmbed(fakeData);
+            }
+
+            if (type === 'quake') {
+                const embed = buildQuakeEmbed(makeFakeQuake());
+                await sendWithMap(embed, loc.lat, loc.lon);
+                await interaction.editReply(`✅ **#${targetChannel.name}** にテスト通知（地震情報）を送信しました。\n震源: ${loc.name} (${loc.lat}, ${loc.lon})`);
 
             } else if (type === 'eew') {
-                // EEW の疑似データ
-                const fakeData = {
-                    earthquake: {
-                        originTime: new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
-                                              .replace(/\//g, '/').replace(',', ''),
-                        hypocenter: {
-                            name:      loc.name,
-                            latitude:  loc.lat,
-                            longitude: loc.lon,
-                            depth:     loc.depth,
-                            magnitude: loc.mag,
-                        },
-                    },
-                    issue: { serial: 1 },
-                    areas: [{ scaleFrom: 50 }],
-                    cancelled: false,
-                };
-                embed = buildEEWEmbed(fakeData);
+                const embed = buildEEWEmbed(makeFakeEEW(1));
+                await sendWithMap(embed, loc.lat, loc.lon);
+                await interaction.editReply(`✅ **#${targetChannel.name}** にテスト通知（EEW）を送信しました。\n震源: ${loc.name} (${loc.lat}, ${loc.lon})`);
+
+            } else if (type === 'sequence') {
+                // ★ EEW(第1報) → 5秒後 EEW(第2報) → 合計約30秒後に地震情報（確定報）を流す連続テスト
+                await interaction.editReply(`▶️ **#${targetChannel.name}** で地震通知シーケンス（EEW→30秒後に確定情報）を開始します。\n震源: ${loc.name} (${loc.lat}, ${loc.lon})`);
+
+                // 第1報（すぐ送信）
+                await sendWithMap(buildEEWEmbed(makeFakeEEW(1)), loc.lat, loc.lon);
+
+                // 第2報（10秒後）
+                setTimeout(async () => {
+                    await sendWithMap(buildEEWEmbed(makeFakeEEW(2)), loc.lat, loc.lon);
+                }, 10_000);
+
+                // 第3報（20秒後）
+                setTimeout(async () => {
+                    await sendWithMap(buildEEWEmbed(makeFakeEEW(3)), loc.lat, loc.lon);
+                }, 20_000);
+
+                // 確定の地震情報（30秒後）
+                setTimeout(async () => {
+                    await sendWithMap(buildQuakeEmbed(makeFakeQuake()), loc.lat, loc.lon);
+                }, 30_000);
 
             } else if (type === 'tsunami') {
-                // 津波予報の疑似データ
+                // 津波予報の疑似データ（P2P簡易版）
                 const fakeData = {
                     cancelled: false,
                     issue: {
-                        time: new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
-                                        .replace(/\//g, '/').replace(',', ''),
+                        time: nowJST(),
                         source: '気象庁（テスト）',
                     },
                     areas: [
@@ -1179,45 +1531,112 @@ client.on(Events.InteractionCreate, async interaction => {
                         { grade: 'Watch',        name: '千葉県外房' },
                     ],
                 };
-                embed = buildTsunamiEmbed(fakeData, 1);
-                testLat = null; testLon = null; // 津波は地図なし
+                const embed = buildTsunamiEmbed(fakeData, 1);
+                await targetChannel.send({ embeds: [embed] }).catch(console.error);
+                await interaction.editReply(`✅ **#${targetChannel.name}** にテスト通知（津波予報・簡易版）を送信しました。`);
+
+            } else if (type === 'tsunami_jma') {
+                // 津波警報・注意報の疑似データ（気象庁詳細版: 到達予想時刻・高さ・実況つき）
+                const nowTs = Math.floor(Date.now() / 1000);
+                const fakeEmbed = new EmbedBuilder()
+                    .setTitle('🌊 津波警報・注意報・予報 第1報（テスト）')
+                    .setColor(0xFF3300)
+                    .setDescription(`${loc.name}を震源とする地震により、津波警報・注意報を発表しました。沿岸部では直ちに高台へ避難してください。`)
+                    .addFields(
+                        { name: '発表時刻', value: `<t:${nowTs}:F>`, inline: false },
+                        {
+                            name: '対象地域',
+                            value:
+                                `**岩手県**（⚠️ 津波警報）\n　予想の高さ: **3m**\n　到達予想時刻: <t:${nowTs + 600}:t>\n\n` +
+                                `**宮城県**（🚨 大津波警報）\n　予想の高さ: **5m超**\n　到達予想時刻: <t:${nowTs + 480}:t>\n\n` +
+                                `**福島県**（🔵 津波注意報）\n　予想の高さ: **1m**\n　到達予想時刻: <t:${nowTs + 900}:t>`,
+                            inline: false,
+                        },
+                        {
+                            name: '🌊 観測実況（到達後の実測値）',
+                            value: `**石巻**: 4.2m（<t:${nowTs - 60}:t> 観測）\n**宮古**: 2.8m（<t:${nowTs - 120}:t> 観測）`,
+                            inline: false,
+                        },
+                    )
+                    .setFooter({ text: '気象庁 津波警報・注意報・予報 (VTSE41) ※これはテストデータです' })
+                    .setTimestamp();
+                await targetChannel.send({ embeds: [fakeEmbed] }).catch(console.error);
+                await interaction.editReply(`✅ **#${targetChannel.name}** にテスト通知（津波警報・気象庁詳細版）を送信しました。`);
             }
 
-            // ★テスト用: 通知チャンネルに送信（設定済みの場合）
-            const snap = await db.collection('earthquake_settings').doc(interaction.guild.id).get();
-            const notifyChannelId = snap.exists ? snap.data().channelId : null;
+            sendCommandLog(interaction, commandName);
+            return;
+        }
 
-            // 地図生成
-            let attachment = null;
-            if (testLat != null) {
-                const buf = await buildMapAttachment(testLat, testLon).catch(e => {
-                    console.error('[テスト地図エラー]', e.message);
-                    return null;
+        // /weather-nerv コマンド ★追加
+        if (commandName === 'weather-nerv') {
+            await interaction.deferReply();
+
+            const prefRaw = options.getString('prefecture').trim();
+            // 「県」「都」「府」が省略されていても部分一致できるよう正規化
+            const prefShort = prefRaw.replace(/[都道府県]$/, '');
+
+            try {
+                const res = await fetch('https://unnerv.jp/@UN_NERV.rss', {
+                    headers: { 'User-Agent': 'JYRACDiscordBot/1.0 (weather-nerv)' }
                 });
-                if (buf) {
-                    attachment = new AttachmentBuilder(buf, { name: 'map.png' });
-                    embed.setImage('attachment://map.png');
-                }
-            }
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const rssText = await res.text();
 
-            const payload = { embeds: [embed] };
-            if (attachment) payload.files = [attachment];
+                // <item> ブロックを抽出
+                const itemBlocks = rssText.match(/<item>[\s\S]*?<\/item>/g) ?? [];
 
-            if (notifyChannelId) {
-                const notifyCh = await client.channels.fetch(notifyChannelId).catch(() => null);
-                if (notifyCh) {
-                    await notifyCh.send(payload).catch(console.error);
-                    await interaction.editReply(`✅ **#${notifyCh.name}** にテスト通知を送信しました。
-震源: ${loc.name} (${loc.lat}, ${loc.lon})`);
-                } else {
-                    await interaction.editReply('❌ 通知チャンネルを取得できませんでした。');
+                const getTag = (block, tag) => {
+                    const m = block.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
+                    return m ? m[1] : null;
+                };
+
+                // 都道府県名（部分一致）でフィルタし、最新のものを1件取得
+                let found = null;
+                for (const block of itemBlocks) {
+                    const title = getTag(block, 'title') ?? '';
+                    const description = getTag(block, 'description') ?? '';
+                    if (title.includes(prefShort) || description.includes(prefShort)) {
+                        found = block;
+                        break; // RSSは新しい順なので最初の一致が最新
+                    }
                 }
-            } else {
-                // 通知チャンネル未設定の場合はコマンド実行チャンネルに送信
-                await interaction.channel.send(payload).catch(console.error);
-                await interaction.editReply(`⚠️ 地震通知チャンネルが未設定のため、このチャンネルに送信しました。
-震源: ${loc.name} (${loc.lat}, ${loc.lon})
-\`/earthquake-setup\` で通知先を設定してください。`);
+
+                if (!found) {
+                    await interaction.editReply(`❌ 「${prefRaw}」に関する最新の気象情報が見つかりませんでした。\n正式な都道府県名（例: 東京都、大阪府、福岡県、北海道）で試してください。`);
+                    sendCommandLog(interaction, commandName);
+                    return;
+                }
+
+                const pubDate = getTag(found, 'pubDate');
+                const link = getTag(found, 'link');
+                let description = getTag(found, 'description') ?? '';
+
+                // HTMLタグとCDATAエスケープを除去して読みやすく整形
+                description = description
+                    .replace(/&lt;br\s*\/?&gt;/gi, '\n')
+                    .replace(/&lt;a[^&]*&gt;/gi, '')
+                    .replace(/&lt;\/a&gt;/gi, '')
+                    .replace(/&lt;[^&]*&gt;/gi, '')
+                    .replace(/&amp;/g, '&')
+                    .replace(/#[^\s]+/g, '') // ハッシュタグ除去
+                    .trim();
+
+                const pubTs = pubDate ? Math.floor(new Date(pubDate).getTime() / 1000) : null;
+
+                const embed = new EmbedBuilder()
+                    .setTitle(`🌦️ 特務機関NERV 気象情報`)
+                    .setDescription(description.slice(0, 4000))
+                    .setColor(0x2B90D9)
+                    .setURL(link || null)
+                    .setFooter({ text: '特務機関NERV (@UN_NERV) | データ取得: RSS' })
+                    .setTimestamp(pubTs ? new Date(pubTs * 1000) : new Date());
+
+                await interaction.editReply({ embeds: [embed] });
+
+            } catch (err) {
+                console.error('[weather-nerv エラー]', err);
+                await interaction.editReply(`❌ 情報の取得に失敗しました: \`${err.message}\``);
             }
 
             sendCommandLog(interaction, commandName);
@@ -1455,7 +1874,8 @@ client.on(Events.InteractionCreate, async interaction => {
             if (value === 'h_export') helpText = '**/export**\nメッセージ管理権限が必要です。指定したチャンネルのメッセージを.txtファイルにエクスポートします。\nオプション: `channel` `limit(1〜10000)` `before` `after`';
             // ★追加
             if (value === 'h_earthquake') helpText = '**/earthquake-setup**\nチャンネル管理権限が必要です。地震情報・緊急地震速報をリアルタイムで通知するチャンネルを設定します。\n`channel` を省略すると設定を解除します。\nデータ元: P2P地震情報API';
-            if (value === 'h_eqtest') helpText = '**/earthquake-test**\nチャンネル管理権限が必要です。設定済みの通知チャンネルに疑似地震通知を送信して表示を確認できます。\ntype: 地震情報 / EEW / 津波予報\nlocation: 震源地プリセット（省略時はランダム）';
+            if (value === 'h_eqtest') helpText = '**/earthquake-test**\nチャンネル管理権限が必要です。設定済みの通知チャンネルに疑似地震通知を送信して表示を確認できます。\ntype:\n　・地震情報のみ / EEWのみ\n　・EEW→（30秒後）地震情報 の連続テスト（第1報→第2報→第3報→確定情報の流れを再現）\n　・津波予報（P2P簡易版） / 津波警報・注意報（気象庁詳細版・到達予想時刻と高さ付き）\nlocation: 震源地プリセット（省略時はランダム）';
+            if (value === 'h_nerv') helpText = '**/weather-nerv**\n特務機関NERVの気象警報・注意報・地震情報などを都道府県名で検索し、最新の1件を表示します。\nprefecture: 都道府県名（例: 東京都、大阪府、福岡県、北海道）\nデータ元: 特務機関NERV (@UN_NERV) RSS';
 
             return await interaction.update({ content: `📜 **ヘルプ詳細**\n\n${helpText}`, components: [interaction.message.components[0]] });
         }
