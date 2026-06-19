@@ -750,90 +750,87 @@ function parseTsunamiXML(xmlText, reportNo) {
  * 気象庁の地震火山Atomフィードをポーリングし、
  * 津波警報・注意報・予報（VTSE41）のXMLを検出してDiscordに詳細通知する。
  */
-function startJMATsunamiMonitor() {
-    const POLL_INTERVAL = 30_000;
+// ─── 気象情報通知モジュール ────────────────────────────────────
+
+function startWeatherMonitor() {
+    // ★ ここにNERVの情報を取得していたRSSのURLを入力してください
+    const RSS_URL = 'ここに元のRSS_URLを入れる'; 
+    const POLL_INTERVAL = 60_000; // 60秒ごとに確認
+
+    const seenItems = new Set();
     const startedAt = Date.now();
-    const seenEntryIds = new Set();
-    const jmaTsunamiReportCounter = new Map(); // eventKey(EventID) → 報数
 
     async function getNotifyChannels() {
-        const snap = await db.collection('earthquake_settings').get();
+        const snap = await db.collection('weather_settings').get();
         return snap.docs.map(d => d.data().channelId).filter(Boolean);
-    }
-
-    async function broadcastJMA(embed) {
-        const channelIds = await getNotifyChannels().catch(() => []);
-        for (const channelId of channelIds) {
-            const ch = await client.channels.fetch(channelId).catch(() => null);
-            if (ch) await ch.send({ embeds: [embed] }).catch(console.error);
-        }
     }
 
     async function poll() {
         try {
-            const res = await fetch(JMA_EQVOL_FEED, {
-                headers: { 'User-Agent': 'JYRACDiscordBot/1.0 (tsunami-notify)' }
-            });
+            const res = await fetch(RSS_URL);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const feedXml = await res.text();
+            const xmlText = await res.text();
 
-            const entries = xmlBlocks(feedXml, 'entry');
+            // <item>タグを抽出
+            const items = xmlText.match(/<item>[\s\S]*?<\/item>/g) || [];
 
-            for (const entry of entries.reverse()) { // 古い順
-                const id = xmlTag(entry, 'id');
-                const title = xmlTag(entry, 'title');
-                const updated = xmlTag(entry, 'updated'); // ISO8601 UTC
-                const linkMatch = entry.match(/<link[^>]*href="([^"]*)"[^>]*\/?>/);
-                const xmlUrl = linkMatch ? linkMatch[1] : null;
+            // 古い順に処理して順番通りに通知する
+            for (const item of items.reverse()) {
+                const guidMatch = item.match(/<guid[^>]*>([\s\S]*?)<\/guid>/);
+                const titleMatch = item.match(/<title>([\s\S]*?)<\/title>/);
+                const descMatch = item.match(/<description>([\s\S]*?)<\/description>/);
+                const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
+                const pubDateMatch = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
 
-                if (!id || !xmlUrl) continue;
-                if (seenEntryIds.has(id)) continue;
-                seenEntryIds.add(id);
-                if (seenEntryIds.size > 200) {
-                    seenEntryIds.delete(seenEntryIds.values().next().value);
+                const guid = guidMatch ? guidMatch[1].trim() : null;
+                // 重複チェック
+                if (!guid || seenItems.has(guid)) continue;
+                seenItems.add(guid);
+
+                // 起動前の古い情報を無視
+                const pubDate = pubDateMatch ? pubDateMatch[1].trim() : null;
+                const pubTsMs = pubDate ? new Date(pubDate).getTime() : Date.now();
+                if (pubTsMs < startedAt - 60_000) continue; 
+
+                const title = titleMatch ? titleMatch[1].trim() : '気象情報';
+                let description = descMatch ? descMatch[1] : '';
+                const link = linkMatch ? linkMatch[1].trim() : null;
+
+                // 元のコードで実装されていた不要なHTMLタグやハッシュタグの除去
+                description = description
+                    .replace(/&lt;a[^&]*&gt;/gi, '')
+                    .replace(/&lt;\/a&gt;/gi, '')
+                    .replace(/&lt;[^&]*&gt;/gi, '')
+                    .replace(/&amp;/g, '&')
+                    .replace(/#[^\s]+/g, '') 
+                    .trim();
+
+                const pubTs = pubTsMs ? Math.floor(pubTsMs / 1000) : null;
+
+                // Embed生成
+                const embed = new EmbedBuilder()
+                    .setTitle(`🌦️ 特務機関NERV 気象情報`)
+                    .setDescription(description.slice(0, 4000))
+                    .setColor(0x2B90D9)
+                    .setURL(link || null)
+                    .setFooter({ text: '特務機関NERV (@UN_NERV) | データ取得: RSS' })
+                    .setTimestamp(pubTs ? new Date(pubTs * 1000) : new Date());
+
+                // 設定されている全てのチャンネルへ配信
+                const channelIds = await getNotifyChannels().catch(() => []);
+                for (const channelId of channelIds) {
+                    const ch = await client.channels.fetch(channelId).catch(() => null);
+                    if (!ch) continue;
+                    await ch.send({ embeds: [embed] }).catch(console.error);
                 }
-
-                // 起動前のエントリはスキップ
-                if (updated) {
-                    const updatedMs = new Date(updated).getTime();
-                    if (!isNaN(updatedMs) && updatedMs < startedAt - 60_000) continue;
-                }
-
-                // タイトルで津波警報・注意報・予報のみ対象にする
-                if (!title || !title.includes('津波警報') && !title.includes('津波予報') && !title.includes('津波情報')) continue;
-
-                // 該当XMLを取得してパース
-                const xmlRes = await fetch(xmlUrl, {
-                    headers: { 'User-Agent': 'JYRACDiscordBot/1.0 (tsunami-notify)' }
-                }).catch(() => null);
-                if (!xmlRes || !xmlRes.ok) continue;
-                const xmlText = await xmlRes.text();
-
-                // 電文種別がVTSE41（津波警報・注意報・予報）かを確認
-                if (!xmlText.includes('<Title>津波警報') && !xmlText.includes('<Title>津波予報') && !title.includes('津波')) {
-                    // タイトルに「津波」とあれば対象として処理続行
-                }
-
-                const eventId = xmlTag(xmlText, 'EventID') ?? id;
-                const reportNo = (jmaTsunamiReportCounter.get(eventId) ?? 0) + 1;
-                jmaTsunamiReportCounter.set(eventId, reportNo);
-                if (jmaTsunamiReportCounter.size > 50) {
-                    jmaTsunamiReportCounter.delete(jmaTsunamiReportCounter.keys().next().value);
-                }
-
-                const embed = parseTsunamiXML(xmlText, reportNo).catch
-                    ? parseTsunamiXML(xmlText, reportNo)
-                    : parseTsunamiXML(xmlText, reportNo);
-
-                await broadcastJMA(embed);
             }
         } catch (err) {
-            console.error('[気象庁津波監視] ポーリングエラー:', err.message);
+            console.error('[気象情報監視] ポーリングエラー:', err.message);
         }
     }
 
-    console.log('[気象庁津波監視] HTTPポーリング開始 (30秒間隔)');
-    poll();
+    console.log('[気象情報監視] HTTPポーリング開始 (60秒間隔)');
+    poll(); // 初回即実行
     setInterval(poll, POLL_INTERVAL);
 }
 
@@ -996,14 +993,15 @@ const commands = [
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 
     // 16. NERV気象情報検索 ★追加
-    new SlashCommandBuilder()
-        .setName('weather-nerv')
-        .setDescription('特務機関NERVの気象警報・注意報など最新情報を都道府県名で検索します')
-        .addStringOption(o =>
-            o.setName('prefecture')
-                .setDescription('都道府県名（例: 東京都、大阪府、福岡県）')
-                .setRequired(true)
-        ),
+    // 16. NERV気象情報自動通知設定
+        new SlashCommandBuilder()
+            .setName('weather-setup')
+            .setDescription('特務機関NERVの気象情報を自動通知するチャンネルを設定します')
+            .addChannelOption(o => o.setName('channel')
+                .setDescription('通知先チャンネル (省略すると設定を解除します)')
+                .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+            )
+            .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 
 ].map(c => c.toJSON());
 
@@ -1029,6 +1027,7 @@ client.once(Events.ClientReady, async () => {
     // 地震通知モニター開始 ★追加
     startEarthquakeMonitor();
     startJMATsunamiMonitor();
+    startWeatherMonitor();
 
     console.log(`Logged in as ${client.user.tag}`);
 });
@@ -1569,76 +1568,26 @@ client.on(Events.InteractionCreate, async interaction => {
         }
 
         // /weather-nerv コマンド ★追加
-        if (commandName === 'weather-nerv') {
-            await interaction.deferReply();
-
-            const prefRaw = options.getString('prefecture').trim();
-            // 「県」「都」「府」が省略されていても部分一致できるよう正規化
-            const prefShort = prefRaw.replace(/[都道府県]$/, '');
+        // /weather-setup コマンド
+        if (commandName === 'weather-setup') {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            const targetChannel = options.getChannel('channel');
 
             try {
-                const res = await fetch('https://unnerv.jp/@UN_NERV.rss', {
-                    headers: { 'User-Agent': 'JYRACDiscordBot/1.0 (weather-nerv)' }
-                });
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const rssText = await res.text();
-
-                // <item> ブロックを抽出
-                const itemBlocks = rssText.match(/<item>[\s\S]*?<\/item>/g) ?? [];
-
-                const getTag = (block, tag) => {
-                    const m = block.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
-                    return m ? m[1] : null;
-                };
-
-                // 都道府県名（部分一致）でフィルタし、最新のものを1件取得
-                let found = null;
-                for (const block of itemBlocks) {
-                    const title = getTag(block, 'title') ?? '';
-                    const description = getTag(block, 'description') ?? '';
-                    if (title.includes(prefShort) || description.includes(prefShort)) {
-                        found = block;
-                        break; // RSSは新しい順なので最初の一致が最新
-                    }
+                // earthquake_settings と同様に weather_settings コレクションを使用
+                const docRef = db.collection('weather_settings').doc(interaction.guild.id);
+                
+                if (targetChannel) {
+                    await docRef.set({ channelId: targetChannel.id });
+                    await interaction.editReply(`✅ 特務機関NERVの気象情報通知を **${targetChannel}** に設定しました。`);
+                } else {
+                    await docRef.delete();
+                    await interaction.editReply('🗑️ 特務機関NERVの気象情報通知設定を解除しました。');
                 }
-
-                if (!found) {
-                    await interaction.editReply(`❌ 「${prefRaw}」に関する最新の気象情報が見つかりませんでした。\n正式な都道府県名（例: 東京都、大阪府、福岡県、北海道）で試してください。`);
-                    sendCommandLog(interaction, commandName);
-                    return;
-                }
-
-                const pubDate = getTag(found, 'pubDate');
-                const link = getTag(found, 'link');
-                let description = getTag(found, 'description') ?? '';
-
-                // HTMLタグとCDATAエスケープを除去して読みやすく整形
-                description = description
-                    .replace(/&lt;br\s*\/?&gt;/gi, '\n')
-                    .replace(/&lt;a[^&]*&gt;/gi, '')
-                    .replace(/&lt;\/a&gt;/gi, '')
-                    .replace(/&lt;[^&]*&gt;/gi, '')
-                    .replace(/&amp;/g, '&')
-                    .replace(/#[^\s]+/g, '') // ハッシュタグ除去
-                    .trim();
-
-                const pubTs = pubDate ? Math.floor(new Date(pubDate).getTime() / 1000) : null;
-
-                const embed = new EmbedBuilder()
-                    .setTitle(`🌦️ 特務機関NERV 気象情報`)
-                    .setDescription(description.slice(0, 4000))
-                    .setColor(0x2B90D9)
-                    .setURL(link || null)
-                    .setFooter({ text: '特務機関NERV (@UN_NERV) | データ取得: RSS' })
-                    .setTimestamp(pubTs ? new Date(pubTs * 1000) : new Date());
-
-                await interaction.editReply({ embeds: [embed] });
-
-            } catch (err) {
-                console.error('[weather-nerv エラー]', err);
-                await interaction.editReply(`❌ 情報の取得に失敗しました: \`${err.message}\``);
+            } catch (e) {
+                console.error(e);
+                await interaction.editReply('❌ 設定の保存に失敗しました。');
             }
-
             sendCommandLog(interaction, commandName);
             return;
         }
