@@ -306,10 +306,24 @@ async function buildMapAttachment(lat, lon, points = null) {
 
     // --- 🌟 各観測点の震度スタンプを地図上に配置 ---
     if (points && Array.isArray(points) && typeof stationsData !== 'undefined') {
+        const drawnCoords = new Set(); // 同じ場所に重なって描画されるのを防ぐ
+
         for (const pt of points) {
-            // stations.json から観測点名(addr)や都道府県(pref)で緯度経度を検索
-            let st = stationsData[pt.addr] || (stationsData[pt.pref] && stationsData[pt.pref][pt.addr]);
+            // 1. JSONから観測点名(addr)や都道府県(pref)で緯度経度を柔軟に検索
+            let st = null;
+            if (stationsData[pt.pref] && stationsData[pt.pref][pt.addr]) {
+                st = stationsData[pt.pref][pt.addr]; // 例: 北海道 -> 根室市
+            } else if (stationsData[pt.addr]) {
+                st = stationsData[pt.addr]; // 例: 根室市（直接記述の場合）
+            } else if (stationsData[pt.pref] && stationsData[pt.pref].lat != null) {
+                st = stationsData[pt.pref]; // 市町村が見つからなければ、県の代表座標に置く
+            }
+
             if (!st || st.lat == null || st.lon == null) continue;
+
+            // 既に同じ場所にスタンプを押したかチェック
+            const coordKey = `${st.lat}_${st.lon}`;
+            if (drawnCoords.has(coordKey)) continue;
 
             // 観測点の緯度経度を、現在のズームレベルでの絶対タイル座標に変換
             const { tileX: px, tileY: py, pixX: pPixX, pixY: pPixY } = latLonToTileAndPixel(st.lat, st.lon, zoom);
@@ -318,7 +332,7 @@ async function buildMapAttachment(lat, lon, points = null) {
             const diffX = px - (cx - HALF);
             const diffY = py - (cy - HALF);
 
-            // キャンバス（ダウンロードした9枚の地図）の範囲内に収まっている場合のみスタンプを押す
+            // 2. キャンバス（3x3のダウンロードした地図）の範囲内に収まっている場合のみスタンプを押す
             if (diffX >= 0 && diffX < GRID && diffY >= 0 && diffY < GRID) {
                 const absX = diffX * TILE + pPixX;
                 const absY = diffY * TILE + pPixY;
@@ -330,10 +344,15 @@ async function buildMapAttachment(lat, lon, points = null) {
                         left: Math.max(0, Math.min(canvasSize - 24, Math.floor(absX - 12))),
                         top: Math.max(0, Math.min(canvasSize - 24, Math.floor(absY - 12))),
                     });
+                    drawnCoords.add(coordKey);
                 }
+            } else {
+                // 枠外だった場合は、なぜ出ないのかをコンソールに表示する
+                console.log(`[地図生成] ${pt.pref}${pt.addr} は画面の枠外のためスタンプをスキップしました`);
             }
         }
     }
+
 
     // 震源地の絶対ピクセル座標（3×3キャンバス内）
     const markerAbsX = HALF * TILE + markerPixX;
