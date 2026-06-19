@@ -639,7 +639,7 @@ function startEarthquakeMonitor() {
                 if (data.code === 551) {
                     // 地震情報: 震源座標を渡す
                     const hypo = data.earthquake?.hypocenter ?? {};
-                    await broadcast(buildQuakeEmbed(data), hypo.latitude, hypo.longitude);
+                   await broadcast(buildQuakeEmbed(data), hypo.latitude, hypo.longitude, data.points);
 
                     // この地震に対応するEEW追跡があれば「終了」マークを付ける
                     // （以後その地震のEEW速報は来ても再通知しない）
