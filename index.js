@@ -796,25 +796,85 @@ function startWeatherMonitor() {
                 let description = descMatch ? descMatch[1] : '';
                 const link = linkMatch ? linkMatch[1].trim() : null;
 
-                // 元のコードで実装されていた不要なHTMLタグやハッシュタグの除去
+                               // --- 🌟 画像URLの抽出（タグを消す前に取得する必要があります） ---
+                let imageUrl = null;
+                // description内の<img>タグから画像URLを抽出
+                const imgMatch = description.match(/<img[^>]+src="([^">]+)"/);
+                // もし <enclosure> などのRSS標準画像タグがある場合用
+                const enclosureMatch = item.match(/<enclosure[^>]+url="([^">]+)"/);
+                
+                if (imgMatch) {
+                    imageUrl = imgMatch[1];
+                } else if (enclosureMatch) {
+                    imageUrl = enclosureMatch[1];
+                }
+
+                // --- 🌟 情報を抜き出す処理 ---
+                // 都道府県の抽出 (例: 【東京都 気象警報・注意報】 -> 東京都)
+                let prefecture = "不明";
+                const prefMatch = title.match(/【(.*?)\s/) || description.match(/【(.*?)\s/); 
+                if (prefMatch) {
+                    prefecture = prefMatch[1];
+                }
+
+                // 警報・注意報の抽出 (本文から「大雨警報」「洪水注意報」などを探し出す)
+                let warningStr = "詳細を本文で確認してください";
+                const warningMatch = description.match(/([^\s>]+(?:特別警報|警報|注意報))/g);
+                if (warningMatch) {
+                    // 重複を削除して結合
+                    warningStr = [...new Set(warningMatch)].join('\n');
+                }
+
+                // 警戒レベルの抽出 (本文に警戒レベル〇 とあれば抜き出す)
+                let alertLevel = "-";
+                const levelMatch = description.match(/警戒レベル([1-5１-５])/);
+                if (levelMatch) {
+                    alertLevel = `レベル${levelMatch[1]}`;
+                }
+
+                // 不要なHTMLタグやハッシュタグの除去
                 description = description
                     .replace(/&lt;a[^&]*&gt;/gi, '')
                     .replace(/&lt;\/a&gt;/gi, '')
                     .replace(/&lt;[^&]*&gt;/gi, '')
                     .replace(/&amp;/g, '&')
+                    .replace(/<[^>]+>/g, '') // 通常のHTMLタグも消す
                     .replace(/#[^\s]+/g, '') 
                     .trim();
 
-                const pubTs = pubTsMs ? Math.floor(pubTsMs / 1000) : null;
+                // フィルタリング処理（気象、警報、注意報が含まれていればTrue）
+                const isWeatherRelated = title.includes('気象') || description.includes('気象') || title.includes('警報') || title.includes('注意報');
+                if (!isWeatherRelated) {
+                    continue; 
+                }
 
-                // Embed生成
+                // 発行日時のフォーマット作成 (例: 24/05/20 15:30)
+                const pubTs = pubTsMs ? Math.floor(pubTsMs / 1000) : null;
+                const d = pubTs ? new Date(pubTs * 1000) : new Date();
+                const formattedDate = `${String(d.getFullYear()).slice(2)}/${String(d.getMonth()+1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+                // --- 🌟 Embed生成（表組みと文字の巨大化） ---
                 const embed = new EmbedBuilder()
-                    .setTitle(`🌦️ 特務機関NERV 気象情報`)
-                    .setDescription(description.slice(0, 4000))
+                    .setTitle(`🌦️ NERV 気象情報`)
+                    // DiscordのMarkdown機能（#）を使って文字を特大にする
+                    .setDescription(`# ${prefecture} 気象情報\n\n${description.slice(0, 1000)}`)
                     .setColor(0x2B90D9)
+                    // addFields を使うと横並びの表形式になります（inline: true）
+                    .addFields(
+                        { name: '都道府県', value: `**${prefecture}**`, inline: true },
+                        { name: '警報・注意報', value: `**${warningStr}**`, inline: true },
+                        { name: '\u200b', value: '\u200b', inline: true }, // 段落合わせの空欄
+                        { name: '警戒レベル', value: `**${alertLevel}**`, inline: true },
+                        { name: '発行日時', value: `**${formattedDate}**`, inline: true },
+                        { name: '\u200b', value: '\u200b', inline: true }
+                    )
                     .setURL(link || null)
-                    .setFooter({ text: '特務機関NERV (@UN_NERV) | データ取得: RSS' })
-                    .setTimestamp(pubTs ? new Date(pubTs * 1000) : new Date());
+                    .setFooter({ text: '特務機関NERV (@UN_NERV) | データ取得: RSS' });
+                
+                // 🌟 画像URLが取得できていれば画像をセット
+                if (imageUrl) {
+                    embed.setImage(imageUrl);
+                }
 
                 // 設定されている全てのチャンネルへ配信
                 const channelIds = await getNotifyChannels().catch(() => []);
