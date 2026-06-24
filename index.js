@@ -33,6 +33,35 @@ admin.initializeApp({
 });
 const db = admin.firestore();
 
+// ─── 権限管理 ──────────────────────────────────────────────────
+// 作成者IDは環境変数 ADMIN_USER_ID から取得
+
+/**
+ * ユーザーがコマンドを使用できるか確認する
+ * 作成者 または Firestoreの許可リストに登録されているユーザーのみtrue
+ */
+async function isAuthorized(userId) {
+    // 作成者は常に許可
+    if (userId === process.env.ADMIN_USER_ID) return true;
+
+    // Firestoreの許可リストを確認
+    const doc = await db.collection('allowed_users').doc(userId).get();
+    return doc.exists;
+}
+
+/**
+ * 権限なしの場合に返すエラーメッセージ
+ */
+async function replyUnauthorized(interaction) {
+    const msg = '❌ このコマンドを使用する権限がありません。作成者に許可を申請してください。';
+    if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: msg });
+    } else {
+        await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
+    }
+}
+// ──────────────────────────────────────────────────────────────
+
 // メモリ保持用マップ
 const broadcastRoleMap = new Map();
 const ticketMessages = new Map();
@@ -96,7 +125,6 @@ const activities = [
 async function fetchAllMessages(channel, { limit = null, before, after } = {}) {
     const messages = [];
     let lastId = before || null;
-    // limit が null の場合は無制限（全件取得）
     const unlimited = limit === null;
 
     while (unlimited || messages.length < limit) {
@@ -191,7 +219,7 @@ function formatMessagesToText(messages, channel, guild) {
     return lines.join('\n');
 }
 
-// --- スラッシュコマンドの定義 (全13コマンド) ---
+// --- スラッシュコマンドの定義 (全15コマンド) ---
 const commands = [
     // 1. 認証パネル作成
     new SlashCommandBuilder()
@@ -199,8 +227,8 @@ const commands = [
         .setDescription('認証パネルを作成します')
         .addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true))
         .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
-        .addStringOption(o => o.setName('description').setDescription('パネルの説明文'))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+        .addStringOption(o => o.setName('description').setDescription('パネルの説明文')),
+        // ★ setDefaultMemberPermissions を削除 → 全員に表示、isAuthorized でチェック
 
     // 2. チケット作成パネル
     new SlashCommandBuilder()
@@ -209,45 +237,39 @@ const commands = [
         .addRoleOption(o => o.setName('admin-role').setDescription('対応を行う管理ロール').setRequired(true))
         .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
         .addStringOption(o => o.setName('description').setDescription('パネルの説明文'))
-        .addStringOption(o => o.setName('panel-desc').setDescription('チケット作成時に送信されるメッセージ'))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+        .addStringOption(o => o.setName('panel-desc').setDescription('チケット作成時に送信されるメッセージ')),
 
     // 3. 一括削除
     new SlashCommandBuilder()
         .setName('delete')
         .setDescription('メッセージを一括削除します')
-        .addIntegerOption(o => o.setName('amount').setDescription('件数(1-100)').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
+        .addIntegerOption(o => o.setName('amount').setDescription('件数(1-100)').setRequired(true)),
 
     // 4. ログ設定・解除
     new SlashCommandBuilder()
         .setName('log')
         .setDescription('ログの送信先を設定または解除します')
-        .addChannelOption(o => o.setName('channel').setDescription('送信先チャンネル（指定なしで設定解除）').setRequired(false))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+        .addChannelOption(o => o.setName('channel').setDescription('送信先チャンネル（指定なしで設定解除）').setRequired(false)),
 
     // 5. ロール付与
     new SlashCommandBuilder()
         .setName('give-role')
         .setDescription('指定したユーザーにロールを付与します')
         .addUserOption(o => o.setName('target').setDescription('対象ユーザー').setRequired(true))
-        .addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+        .addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true)),
 
     // 6. ロール剥奪
     new SlashCommandBuilder()
         .setName('remove-role')
         .setDescription('指定したユーザーからロールを剥奪します')
         .addUserOption(o => o.setName('target').setDescription('対象ユーザー').setRequired(true))
-        .addRoleOption(o => o.setName('role').setDescription('剥奪するロール').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+        .addRoleOption(o => o.setName('role').setDescription('剥奪するロール').setRequired(true)),
 
     // 7. ロール確認
     new SlashCommandBuilder()
         .setName('role-confirmation')
         .setDescription('指定ユーザーが所持しているロールの一覧を確認します')
-        .addUserOption(o => o.setName('target').setDescription('確認対象のユーザー').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers),
+        .addUserOption(o => o.setName('target').setDescription('確認対象のユーザー').setRequired(true)),
 
     // 8. 通知登録・解除
     new SlashCommandBuilder()
@@ -258,16 +280,14 @@ const commands = [
     new SlashCommandBuilder()
         .setName('notice')
         .setDescription('登録ユーザーにお知らせをDM送信します(管理者専用)')
-        .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+        .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true)),
 
     // 10. 一斉送信
     new SlashCommandBuilder()
         .setName('broadcast')
         .setDescription('指定ロールの所持者に一斉DMを送信します(管理者専用)')
         .addRoleOption(o => o.setName('target-role').setDescription('送信対象のロール').setRequired(true))
-        .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+        .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true)),
 
     // 11. 作成依頼
     new SlashCommandBuilder()
@@ -279,7 +299,7 @@ const commands = [
         .setName('help')
         .setDescription('コマンドの一覧と詳細を表示します'),
 
-    // 13. チャンネルエクスポート ★追加
+    // 13. チャンネルエクスポート
     new SlashCommandBuilder()
         .setName('export')
         .setDescription('チャンネルのメッセージをテキストファイルにエクスポートします')
@@ -303,8 +323,27 @@ const commands = [
             o.setName('after')
                 .setDescription('このメッセージID以降のメッセージを取得')
                 .setRequired(false)
-        )
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
+        ),
+
+    // ★ 14. ユーザー許可 (作成者専用)
+    new SlashCommandBuilder()
+        .setName('allow-user')
+        .setDescription('【作成者専用】指定ユーザーにすべてのコマンドの使用を許可します')
+        .addUserOption(o =>
+            o.setName('target')
+                .setDescription('許可するユーザー')
+                .setRequired(true)
+        ),
+
+    // ★ 15. ユーザー許可解除 (作成者専用)
+    new SlashCommandBuilder()
+        .setName('deny-user')
+        .setDescription('【作成者専用】指定ユーザーのコマンド使用許可を剥奪します')
+        .addUserOption(o =>
+            o.setName('target')
+                .setDescription('許可を解除するユーザー')
+                .setRequired(true)
+        ),
 
 ].map(c => c.toJSON());
 
@@ -314,7 +353,7 @@ client.once(Events.ClientReady, async () => {
     
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('--- All 13 Commands Registered ---');
+        console.log('--- All 15 Commands Registered ---');
     } catch (error) {
         console.error(error);
     }
@@ -341,6 +380,107 @@ client.on(Events.InteractionCreate, async interaction => {
     // 1. スラッシュコマンドの処理
     if (interaction.isChatInputCommand()) {
         const { commandName, options } = interaction;
+
+        // ─────────────────────────────────────────────────────────
+        // ★ 全コマンド共通: 権限チェック
+        //   /receive-notifications と /help と /request は誰でも使用可能
+        //   それ以外は作成者または許可ユーザーのみ
+        // ─────────────────────────────────────────────────────────
+        const publicCommands = ['receive-notifications', 'help', 'request'];
+        if (!publicCommands.includes(commandName)) {
+            const authorized = await isAuthorized(interaction.user.id);
+            if (!authorized) {
+                return replyUnauthorized(interaction);
+            }
+        }
+
+        // ★ /allow-user コマンド (作成者のみ)
+        if (commandName === 'allow-user') {
+            // allow-user / deny-user はさらに作成者のみに限定
+            if (interaction.user.id !== process.env.ADMIN_USER_ID) {
+                return interaction.reply({ content: '❌ このコマンドは作成者のみ使用できます。', flags: MessageFlags.Ephemeral });
+            }
+
+            const target = options.getUser('target');
+
+            if (target.id === process.env.ADMIN_USER_ID) {
+                return interaction.reply({ content: '❌ 作成者自身を登録する必要はありません。', flags: MessageFlags.Ephemeral });
+            }
+
+            await db.collection('allowed_users').doc(target.id).set({
+                username: target.username,
+                addedAt: new Date(),
+                addedBy: interaction.user.id
+            });
+
+            const embed = new EmbedBuilder()
+                .setTitle('✅ ユーザー許可')
+                .setDescription(`${target} にすべてのコマンドの使用を許可しました。`)
+                .addFields(
+                    { name: 'ユーザー名', value: target.username, inline: true },
+                    { name: 'ユーザーID', value: target.id, inline: true }
+                )
+                .setColor(0x2ECC71)
+                .setTimestamp();
+
+            await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+
+            const logEmbed = new EmbedBuilder()
+                .setTitle('🔓 ユーザー許可ログ')
+                .addFields(
+                    { name: '操作者', value: `${interaction.user}`, inline: true },
+                    { name: '対象ユーザー', value: `${target}`, inline: true },
+                    { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+                )
+                .setColor(0x2ECC71)
+                .setTimestamp();
+            sendLog(interaction.guild, logEmbed);
+            return;
+        }
+
+        // ★ /deny-user コマンド (作成者のみ)
+        if (commandName === 'deny-user') {
+            if (interaction.user.id !== process.env.ADMIN_USER_ID) {
+                return interaction.reply({ content: '❌ このコマンドは作成者のみ使用できます。', flags: MessageFlags.Ephemeral });
+            }
+
+            const target = options.getUser('target');
+
+            if (target.id === process.env.ADMIN_USER_ID) {
+                return interaction.reply({ content: '❌ 作成者自身の権限は変更できません。', flags: MessageFlags.Ephemeral });
+            }
+
+            const doc = await db.collection('allowed_users').doc(target.id).get();
+            if (!doc.exists) {
+                return interaction.reply({ content: `❌ ${target.username} は許可リストに登録されていません。`, flags: MessageFlags.Ephemeral });
+            }
+
+            await db.collection('allowed_users').doc(target.id).delete();
+
+            const embed = new EmbedBuilder()
+                .setTitle('🚫 ユーザー許可解除')
+                .setDescription(`${target} のコマンド使用許可を解除しました。`)
+                .addFields(
+                    { name: 'ユーザー名', value: target.username, inline: true },
+                    { name: 'ユーザーID', value: target.id, inline: true }
+                )
+                .setColor(0xE74C3C)
+                .setTimestamp();
+
+            await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+
+            const logEmbed = new EmbedBuilder()
+                .setTitle('🔒 ユーザー許可解除ログ')
+                .addFields(
+                    { name: '操作者', value: `${interaction.user}`, inline: true },
+                    { name: '対象ユーザー', value: `${target}`, inline: true },
+                    { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+                )
+                .setColor(0xE74C3C)
+                .setTimestamp();
+            sendLog(interaction.guild, logEmbed);
+            return;
+        }
 
         // /log コマンド
         if (commandName === 'log') {
@@ -585,6 +725,8 @@ client.on(Events.InteractionCreate, async interaction => {
                     { label: '/log (管理ログ)', value: 'h_log' },
                     { label: '/role-confirmation (確認)', value: 'h_role' },
                     { label: '/export (チャンネルエクスポート)', value: 'h_export' },
+                    { label: '/allow-user (ユーザー許可)', value: 'h_allow' },
+                    { label: '/deny-user (ユーザー許可解除)', value: 'h_deny' },
                 ]);
 
             await interaction.reply({
@@ -596,12 +738,12 @@ client.on(Events.InteractionCreate, async interaction => {
             return;
         }
 
-        // /export コマンド ★追加
+        // /export コマンド
         if (commandName === 'export') {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
             const targetChannel = options.getChannel('channel') || interaction.channel;
-            const limit = options.getInteger('limit') ?? null; // null = 全件取得
+            const limit = options.getInteger('limit') ?? null;
             const before = options.getString('before') || undefined;
             const after = options.getString('after') || undefined;
 
@@ -615,7 +757,8 @@ client.on(Events.InteractionCreate, async interaction => {
             }
 
             try {
-                const limitLabel = limit !== null ? `最大 ${limit} 件` : '全件'; await interaction.editReply(`⏳ **#${targetChannel.name}** のメッセージを取得中... (${limitLabel})`);
+                const limitLabel = limit !== null ? `最大 ${limit} 件` : '全件';
+                await interaction.editReply(`⏳ **#${targetChannel.name}** のメッセージを取得中... (${limitLabel})`);
 
                 const messages = await fetchAllMessages(targetChannel, { limit, before, after });
 
@@ -641,7 +784,6 @@ client.on(Events.InteractionCreate, async interaction => {
 
                 fs.unlinkSync(filepath);
 
-                // ログ送信
                 const logEmbed = new EmbedBuilder()
                     .setTitle('📤 エクスポートログ')
                     .addFields(
@@ -899,11 +1041,13 @@ client.on(Events.InteractionCreate, async interaction => {
             const value = interaction.values[0];
             let helpText = '';
 
-            if (value === 'h_verify') helpText = '**/verify**\nロール管理権限が必要です。ボタン付きの認証パネルを設置し、ユーザーが手軽にロールを獲得できるようにします。';
-            if (value === 'h_ticket') helpText = '**/ticket**\nチャンネル管理権限が必要です。ユーザー個別の問い合わせ用プライベートチャンネルを開設するパネルを設置します。';
-            if (value === 'h_log') helpText = '**/log**\n管理者権限が必要です。認証や一括削除のアクションが行われた際に送信されるログチャンネルの指定・解除を行います。';
-            if (value === 'h_role') helpText = '**/role-confirmation**\nモデレーター権限が必要です。対象のユーザーが現在持っている全ロールの一覧を表示します。';
-            if (value === 'h_export') helpText = '**/export**\nメッセージ管理権限が必要です。指定したチャンネルのメッセージを.txtファイルにエクスポートします。\nオプション: `channel` `limit(1〜10000)` `before` `after`';
+            if (value === 'h_verify') helpText = '**/verify**\n許可ユーザーが使用できます。ボタン付きの認証パネルを設置し、ユーザーが手軽にロールを獲得できるようにします。';
+            if (value === 'h_ticket') helpText = '**/ticket**\n許可ユーザーが使用できます。ユーザー個別の問い合わせ用プライベートチャンネルを開設するパネルを設置します。';
+            if (value === 'h_log') helpText = '**/log**\n許可ユーザーが使用できます。認証や一括削除のアクションが行われた際に送信されるログチャンネルの指定・解除を行います。';
+            if (value === 'h_role') helpText = '**/role-confirmation**\n許可ユーザーが使用できます。対象のユーザーが現在持っている全ロールの一覧を表示します。';
+            if (value === 'h_export') helpText = '**/export**\n許可ユーザーが使用できます。指定したチャンネルのメッセージを.txtファイルにエクスポートします。\nオプション: `channel` `limit(1〜)` `before` `after`';
+            if (value === 'h_allow') helpText = '**/allow-user**\n【作成者専用】指定ユーザーにすべてのコマンドの使用を許可します。';
+            if (value === 'h_deny') helpText = '**/deny-user**\n【作成者専用】指定ユーザーのコマンド使用許可を剥奪します。';
 
             return await interaction.update({ content: `📜 **ヘルプ詳細**\n\n${helpText}`, components: [interaction.message.components[0]] });
         }
