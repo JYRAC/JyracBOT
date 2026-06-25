@@ -941,7 +941,6 @@ client.once(Events.ClientReady, async () => {
 
     // 地震通知モニター開始 ★追加
     startEarthquakeMonitor();
-    startWeatherMonitor();
 
     console.log(`Logged in as ${client.user.tag}`);
 });
