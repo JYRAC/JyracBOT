@@ -39,6 +39,36 @@ const db = admin.firestore();
 const broadcastRoleMap = new Map();
 const ticketMessages = new Map();
 
+// --- 権限許可システム ---
+const OWNER_ID = process.env.OWNER_ID; // .envに追加: OWNER_ID=あなたのDiscordユーザーID
+
+/**
+ * ユーザーがコマンドを使用できるか判定する
+ * 条件: Discordの権限を持っている OR オーナーに許可されている
+ * @param {import('discord.js').ChatInputCommandInteraction} interaction
+ * @returns {Promise<boolean>}
+ */
+async function hasCommandAccess(interaction) {
+    // 1. Discordのサーバー権限でそもそも使える場合はOK（オーナー・管理者など）
+    //    setDefaultMemberPermissions で設定した権限を実際に持っているかチェック
+    const cmd = interaction.guild.commands.cache.find(c => c.name === interaction.commandName)
+               ?? (await interaction.guild.commands.fetch().then(cmds => cmds.find(c => c.name === interaction.commandName)).catch(() => null));
+
+    if (cmd?.defaultMemberPermissions) {
+        if (interaction.memberPermissions.has(cmd.defaultMemberPermissions)) return true;
+    }
+
+    // 2. Firebaseの許可リストに登録されているか確認
+    try {
+        const doc = await db.collection('command_access').doc(interaction.user.id).get();
+        if (doc.exists && doc.data()?.allowed === true) return true;
+    } catch (e) {
+        console.error('[権限チェック] Firebaseエラー:', e);
+    }
+
+    return false;
+}
+
 // --- 🌟 観測点データの読み込み ---
 let stationsData = {};
 try {
@@ -1129,6 +1159,23 @@ const commands = [
             )
             .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 
+    // 17. コマンド使用許可付与（オーナー専用）
+    new SlashCommandBuilder()
+        .setName('grant-access')
+        .setDescription('指定ユーザーに全コマンドの使用を許可します（オーナー専用）')
+        .addUserOption(o => o.setName('target').setDescription('許可するユーザー').setRequired(true)),
+
+    // 18. コマンド使用許可解除（オーナー専用）
+    new SlashCommandBuilder()
+        .setName('revoke-access')
+        .setDescription('指定ユーザーのコマンド使用許可を解除します（オーナー専用）')
+        .addUserOption(o => o.setName('target').setDescription('解除するユーザー').setRequired(true)),
+
+    // 19. コマンド使用許可一覧（オーナー専用）
+    new SlashCommandBuilder()
+        .setName('list-access')
+        .setDescription('コマンド使用を許可しているユーザーの一覧を表示します（オーナー専用）'),
+
 ].map(c => c.toJSON());
 
 // --- Bot 起動イベント ---
@@ -1137,7 +1184,7 @@ client.once(Events.ClientReady, async () => {
 
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('--- All 16 Commands Registered ---');
+        console.log('--- All 19 Commands Registered ---');
     } catch (error) {
         console.error(error);
     }
@@ -1169,7 +1216,111 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isChatInputCommand()) {
         const { commandName, options } = interaction;
 
-        // /log コマンド
+        // ─── オーナー専用コマンド（権限チェック前に処理） ───────────────
+        if (['grant-access', 'revoke-access', 'list-access'].includes(commandName)) {
+            // オーナーIDが未設定、またはオーナー本人でない場合は拒否
+            if (!OWNER_ID || interaction.user.id !== OWNER_ID) {
+                return await interaction.reply({
+                    content: '❌ このコマンドはボットオーナーのみ実行できます。',
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+            if (commandName === 'grant-access') {
+                const target = options.getUser('target');
+                await db.collection('command_access').doc(target.id).set({
+                    allowed: true,
+                    username: target.username,
+                    grantedBy: interaction.user.id,
+                    grantedAt: new Date()
+                });
+
+                const logEmbed = new EmbedBuilder()
+                    .setTitle('🔓 コマンド許可ログ')
+                    .addFields(
+                        { name: '操作者', value: `${interaction.user}`, inline: true },
+                        { name: '対象ユーザー', value: `${target} (${target.username})`, inline: true },
+                        { name: '操作', value: '許可付与', inline: true },
+                        { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+                    )
+                    .setColor(0x2ECC71)
+                    .setTimestamp();
+                sendLog(interaction.guild, logEmbed);
+
+                return await interaction.editReply(`✅ **${target.username}** にコマンド使用許可を付与しました。`);
+            }
+
+            if (commandName === 'revoke-access') {
+                const target = options.getUser('target');
+                const doc = await db.collection('command_access').doc(target.id).get();
+
+                if (!doc.exists || !doc.data()?.allowed) {
+                    return await interaction.editReply(`❌ **${target.username}** はコマンド許可リストに登録されていません。`);
+                }
+
+                await db.collection('command_access').doc(target.id).delete();
+
+                const logEmbed = new EmbedBuilder()
+                    .setTitle('🔒 コマンド許可解除ログ')
+                    .addFields(
+                        { name: '操作者', value: `${interaction.user}`, inline: true },
+                        { name: '対象ユーザー', value: `${target} (${target.username})`, inline: true },
+                        { name: '操作', value: '許可解除', inline: true },
+                        { name: '日時', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
+                    )
+                    .setColor(0xE74C3C)
+                    .setTimestamp();
+                sendLog(interaction.guild, logEmbed);
+
+                return await interaction.editReply(`✅ **${target.username}** のコマンド使用許可を解除しました。`);
+            }
+
+            if (commandName === 'list-access') {
+                const snap = await db.collection('command_access').where('allowed', '==', true).get();
+
+                if (snap.empty) {
+                    return await interaction.editReply('📋 現在、コマンド使用を許可しているユーザーはいません。');
+                }
+
+                const lines = snap.docs.map(d => {
+                    const data = d.data();
+                    const ts = data.grantedAt?.toDate
+                        ? Math.floor(data.grantedAt.toDate().getTime() / 1000)
+                        : null;
+                    const timeStr = ts ? `<t:${ts}:f>` : '不明';
+                    return `・**${data.username ?? d.id}** (ID: \`${d.id}\`) — 付与日時: ${timeStr}`;
+                });
+
+                const embed = new EmbedBuilder()
+                    .setTitle('📋 コマンド使用許可ユーザー一覧')
+                    .setDescription(lines.join('\n'))
+                    .setColor(0x3498DB)
+                    .setTimestamp();
+
+                return await interaction.editReply({ embeds: [embed] });
+            }
+        }
+
+        // ─── 通常コマンドの権限チェック ────────────────────────────────
+        // setDefaultMemberPermissions が設定されているコマンドは
+        // Discord権限 OR Firebase許可のどちらかを満たす必要がある
+        const NO_PERMISSION_COMMANDS = [
+            'log', 'verify', 'delete', 'ticket', 'give-role', 'remove-role',
+            'role-confirmation', 'notice', 'broadcast', 'export',
+            'earthquake-setup', 'earthquake-test', 'weather-setup'
+        ];
+
+        if (NO_PERMISSION_COMMANDS.includes(commandName)) {
+            const allowed = await hasCommandAccess(interaction);
+            if (!allowed) {
+                return await interaction.reply({
+                    content: '❌ このコマンドを使用する権限がありません。\nサーバー管理者またはボットオーナーに許可を申請してください。',
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+        }
         if (commandName === 'log') {
             await interaction.deferReply({ flags: MessageFlags.Ephemeral });
             const channel = options.getChannel('channel');
