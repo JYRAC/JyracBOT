@@ -40,7 +40,7 @@ const broadcastRoleMap = new Map();
 const ticketMessages = new Map();
 
 // --- 権限許可システム ---
-const OWNER_ID = process.env.OWNER_ID; // .envに追加: OWNER_ID=あなたのDiscordユーザーID
+const OWNER_ID = process.env.ADMIN_USER_ID
 
 /**
  * 各コマンドに必要なDiscord権限のマップ
