@@ -998,7 +998,7 @@ client.on(Events.InteractionCreate, async interaction => {
                 const target = options.getUser('target');
                 const doc = await db.collection('command_access').doc(target.id).get();
 
-                if (!doc.exists || !doc.data()?.allowed) {
+                            if (!doc.exists || !doc.data()?.allowed) {
                     return await interaction.editReply(`❌ **${target.username}** はコマンド許可リストに登録されていません。`);
                 }
 
