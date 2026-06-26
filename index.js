@@ -873,11 +873,11 @@ client.on(Events.InteractionCreate, async interaction => {
 
             if (commandName === 'grant-access') {
                 const target = options.getUser('target');
-                // 修正: grantedAt を削除してTTLによる自動削除を防止
                 await db.collection('command_access').doc(target.id).set({
                     allowed: true,
                     username: target.username,
                     grantedBy: interaction.user.id,
+                    grantedTimestamp: new Date(),
                 });
 
                 const logEmbed = new EmbedBuilder()
@@ -929,7 +929,11 @@ client.on(Events.InteractionCreate, async interaction => {
 
                 const lines = snap.docs.map(d => {
                     const data = d.data();
-                    return `・**${data.username ?? d.id}** (ID: \`${d.id}\`) — 付与者: ${data.grantedBy ?? '不明'}`;
+                    const ts = data.grantedTimestamp?.toDate
+                        ? Math.floor(data.grantedTimestamp.toDate().getTime() / 1000)
+                        : null;
+                    const timeStr = ts ? `<t:${ts}:f>` : '不明';
+                    return `・**${data.username ?? d.id}** (ID: \`${d.id}\`) — 付与日時: ${timeStr}`;
                 });
 
                 const embed = new EmbedBuilder()
