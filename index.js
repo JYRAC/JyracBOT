@@ -438,14 +438,17 @@ async function buildJMAMapAttachment(epicLat, epicLon, stations = []) {
     const OUT_W = canvasSize, OUT_H = 500;
     const cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, Math.floor(markerAbsX - OUT_W / 2)));
     const cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, Math.floor(markerAbsY - OUT_H / 2)));
+    const fullCanvas = await sharp({
+    create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 220, g: 220, b: 220, alpha: 1 } }
+})
+    .composite(composites)
+    .png()
+    .toBuffer();
 
-    return await sharp({
-        create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 220, g: 220, b: 220, alpha: 1 } }
-    })
-        .composite(composites)
-        .extract({ left: cropLeft, top: cropTop, width: OUT_W, height: OUT_H })
-        .png()
-        .toBuffer();
+return await sharp(fullCanvas)
+    .extract({ left: cropLeft, top: cropTop, width: OUT_W, height: OUT_H })
+    .png()
+    .toBuffer();
 }
 
 // ─── Embed生成 ──────────────────────────────────────────────────
