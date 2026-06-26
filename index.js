@@ -291,10 +291,10 @@ function getScaleSvg(intStr) {
         '2':  { text: '2',  bg: '#00aaff', c: '#000000' },
         '3':  { text: '3',  bg: '#0041ff', c: '#ffffff' },
         '4':  { text: '4',  bg: '#fae696', c: '#000000' },
-        '5-': { text: '5弱', bg: '#ffe600', c: '#000000' },
-        '5+': { text: '5強', bg: '#ff9900', c: '#000000' },
-        '6-': { text: '6弱', bg: '#ff2800', c: '#ffffff' },
-        '6+': { text: '6強', bg: '#a50021', c: '#ffffff' },
+        '5⇓': { text: '5弱', bg: '#ffe600', c: '#000000' },
+        '5⇑': { text: '5強', bg: '#ff9900', c: '#000000' },
+        '6⇓': { text: '6弱', bg: '#ff2800', c: '#ffffff' },
+        '6⇑': { text: '6強', bg: '#a50021', c: '#ffffff' },
         '7':  { text: '7',  bg: '#b40068', c: '#ffffff' },
     };
     const s = scaleMap[intStr];
