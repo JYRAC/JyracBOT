@@ -73,14 +73,17 @@ async function hasCommandAccess(interaction) {
     // 1. サーバーオーナーは常に許可
     if (interaction.guild.ownerId === interaction.user.id) return true;
 
-    // 2. Administratorを持つメンバーは常に許可
+    // 2. BOT作成者（OWNER_ID）は常に許可 ← 追加
+    if (OWNER_ID && interaction.user.id === OWNER_ID) return true;
+
+    // 3. Administratorを持つメンバーは常に許可
     if (interaction.memberPermissions.has(PermissionsBitField.Flags.Administrator)) return true;
 
-    // 3. コマンド固有の必要権限を直接チェック
+    // 4. コマンド固有の必要権限を直接チェック
     const requiredPerm = COMMAND_REQUIRED_PERMISSIONS[interaction.commandName];
     if (requiredPerm && interaction.memberPermissions.has(requiredPerm)) return true;
 
-    // 4. Firebaseの許可リストに登録されているか確認
+    // 5. Firebaseの許可リストに登録されているか確認
     try {
         const doc = await db.collection('command_access').doc(interaction.user.id).get();
         if (doc.exists && doc.data()?.allowed === true) return true;
@@ -978,7 +981,6 @@ client.on(Events.InteractionCreate, async interaction => {
                     allowed: true,
                     username: target.username,
                     grantedBy: interaction.user.id,
-                    grantedAt: new Date()
                 });
 
                 const logEmbed = new EmbedBuilder()
