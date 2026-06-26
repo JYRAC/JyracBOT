@@ -1059,6 +1059,9 @@ client.on(Events.InteractionCreate, async interaction => {
         ];
 
         if (NO_PERMISSION_COMMANDS.includes(commandName)) {
+            // 先にdeferReplyで時間を確保してからFirebaseチェック
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+            
             const allowed = await hasCommandAccess(interaction);
             if (!allowed) {
                 return await interaction.reply({
