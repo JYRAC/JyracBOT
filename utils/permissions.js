@@ -10,6 +10,9 @@ const { EmbedBuilder } = require('discord.js');
  * @returns {Promise<boolean>}
  */
 async function hasCommandAccess(interaction, db) {
+
+    if (interaction.user.id === process.env.ADMIN_USER_ID) return true;
+    
     try {
         const doc = await db.collection('command_access').doc(interaction.user.id).get();
         if (doc.exists && doc.data()?.allowed === true) return true;
