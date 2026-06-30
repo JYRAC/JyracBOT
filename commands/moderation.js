@@ -6,8 +6,9 @@ const {
     ButtonBuilder,
     ButtonStyle,
     MessageFlags,
+    PermissionsBitField,
 } = require('discord.js');
-const { sendCommandLog, sendLog } = require('../utils/permissions');
+const { sendCommandLog, sendLog, checkBotPermissionsOrReply } = require('../utils/permissions');
 
 /**
  * モデレーション系コマンドを処理する
@@ -52,6 +53,11 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
     // パネルはチャンネル全体に表示する（ephemeral不可）ため、
     // deferReply 済みの場合は followUp で公開送信し、自分への返信はその旨だけにする
     if (commandName === 'verify') {
+        if (await checkBotPermissionsOrReply(interaction, [
+            PermissionsBitField.Flags.ManageRoles,
+            PermissionsBitField.Flags.SendMessages,
+        ])) return true;
+
         const role  = options.getRole('role');
         const title = options.getString('title') ?? '認証パネル';
         const desc  = options.getString('description') ?? '以下のボタンを押して認証を完了してください。';
@@ -78,6 +84,10 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
 
     // ── /delete ───────────────────────────────────────────────
     if (commandName === 'delete') {
+        if (await checkBotPermissionsOrReply(interaction, [
+            PermissionsBitField.Flags.ManageMessages,
+        ])) return true;
+
         const amount = options.getInteger('amount');
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`bulk_yes_${amount}`).setLabel('削除').setStyle(ButtonStyle.Danger),
@@ -91,6 +101,11 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
     // ── /ticket ───────────────────────────────────────────────
     // パネルはチャンネル全体に表示する（ephemeral不可）
     if (commandName === 'ticket') {
+        if (await checkBotPermissionsOrReply(interaction, [
+            PermissionsBitField.Flags.ManageChannels,
+            PermissionsBitField.Flags.SendMessages,
+        ])) return true;
+
         const adminRole = options.getRole('admin-role');
         const key = `t_${Date.now()}`;
         ticketMessages.set(key, options.getString('panel-desc') ?? null);
@@ -117,6 +132,10 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
 
     // ── /give-role / /remove-role ─────────────────────────────
     if (['give-role', 'remove-role'].includes(commandName)) {
+        if (await checkBotPermissionsOrReply(interaction, [
+            PermissionsBitField.Flags.ManageRoles,
+        ])) return true;
+
         const member = options.getMember('target');
         const role   = options.getRole('role');
         try {

@@ -3,6 +3,32 @@
 const { EmbedBuilder, AttachmentBuilder } = require('discord.js');
 const { parseISO6709, buildJMAMapAttachment } = require('./map');
 
+// ─── 震度速報専用 都道府県コード対応表 ─────────────────────────
+// 気象庁 list.json の item.int[].code（2桁固定）→ 都道府県名
+// （気象庁防災情報で使われる固定コードのため、変更されない前提でハードコード）
+const PREF_CODE_MAP = {
+    '01': '北海道',   '02': '青森県',   '03': '岩手県',   '04': '宮城県',
+    '05': '秋田県',   '06': '山形県',   '07': '福島県',   '08': '茨城県',
+    '09': '栃木県',   '10': '群馬県',   '11': '埼玉県',   '12': '千葉県',
+    '13': '東京都',   '14': '神奈川県', '15': '新潟県',   '16': '富山県',
+    '17': '石川県',   '18': '福井県',   '19': '山梨県',   '20': '長野県',
+    '21': '岐阜県',   '22': '静岡県',   '23': '愛知県',   '24': '三重県',
+    '25': '滋賀県',   '26': '京都府',   '27': '大阪府',   '28': '兵庫県',
+    '29': '奈良県',   '30': '和歌山県', '31': '鳥取県',   '32': '島根県',
+    '33': '岡山県',   '34': '広島県',   '35': '山口県',   '36': '徳島県',
+    '37': '香川県',   '38': '愛媛県',   '39': '高知県',   '40': '福岡県',
+    '41': '佐賀県',   '42': '長崎県',   '43': '熊本県',   '44': '大分県',
+    '45': '宮崎県',   '46': '鹿児島県', '47': '沖縄県',
+};
+
+/**
+ * 震度速報の都道府県コードを都道府県名に変換する
+ * 対応表にないコードの場合はコードそのものを返す（フォールバック）
+ */
+function prefNameFromCode(code) {
+    return PREF_CODE_MAP[code] ?? `地域コード${code}`;
+}
+
 // ─── 震度表示ヘルパー ──────────────────────────────────────────
 
 /**
@@ -94,6 +120,7 @@ function buildJMAQuakeEmbed(detail, title) {
 
 /**
  * 気象庁 震源・震度情報 Body から観測点リストを抽出する
+ * 都道府県名(pref)も付与し、後段の絞り込み処理(map.js)で利用する
  */
 function extractStationsFromJMA(detail) {
     const stations = [];
@@ -107,6 +134,7 @@ function extractStationsFromJMA(detail) {
                             lat: st.latlon.lat,
                             lon: st.latlon.lon,
                             int: st.Int,
+                            pref: pref.Name ?? null, // 都道府県名を保持
                         });
                     }
                 }
@@ -208,9 +236,11 @@ function startEarthquakeMonitor(client, db) {
                     const arrivalTs = item.at ? Math.floor(new Date(item.at).getTime() / 1000) : null;
                     const arrivalStr = arrivalTs ? `<t:${arrivalTs}:F>` : '不明';
 
+                    const INT_ORDER = ['1', '2', '3', '4', '5-', '5+', '6-', '6+', '7'];
                     const prefLines = (item.int ?? [])
                         .filter(p => ['3', '4', '5-', '5+', '6-', '6+', '7'].includes(p.maxi))
-                        .map(p => `${formatIntensity(p.maxi)}: (コード ${p.code})`)
+                        .sort((a, b) => INT_ORDER.indexOf(b.maxi) - INT_ORDER.indexOf(a.maxi))
+                        .map(p => `震度${formatIntensity(p.maxi)}: ${prefNameFromCode(p.code)}`)
                         .join('\n');
 
                     const embed = new EmbedBuilder()
@@ -294,6 +324,7 @@ function startEarthquakeMonitor(client, db) {
 module.exports = {
     formatIntensity,
     intensityToColor,
+    prefNameFromCode,
     buildJMAQuakeEmbed,
     extractStationsFromJMA,
     startEarthquakeMonitor,

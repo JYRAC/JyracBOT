@@ -9,7 +9,7 @@ const {
     PermissionsBitField,
     MessageFlags,
 } = require('discord.js');
-const { sendLog } = require('../utils/permissions');
+const { sendLog, checkBotPermissionsOrReply } = require('../utils/permissions');
 
 // ─── ボタン操作 ────────────────────────────────────────────────
 
@@ -25,6 +25,12 @@ async function handleButton(interaction, db, ticketMessages) {
     // 認証ボタン
     if (customId.startsWith('v_role_')) {
         const roleId = customId.split('_')[2];
+
+        // 実行前に権限を事前チェックし、未然にエラーを防ぐ
+        if (await checkBotPermissionsOrReply(interaction, [
+            PermissionsBitField.Flags.ManageRoles,
+        ])) return;
+
         await interaction.reply({ content: '認証を処理しています...', flags: MessageFlags.Ephemeral });
         try {
             await interaction.member.roles.add(roleId);
@@ -52,6 +58,12 @@ async function handleButton(interaction, db, ticketMessages) {
     if (customId.startsWith('bulk_yes_')) {
         const amount = parseInt(customId.split('_')[2]);
         const chName = interaction.channel.name;
+
+        // 実行前に権限を事前チェックし、未然にエラーを防ぐ
+        if (await checkBotPermissionsOrReply(interaction, [
+            PermissionsBitField.Flags.ManageMessages,
+        ])) return;
+
         await interaction.update({ content: 'メッセージを削除しています...', components: [] });
         try {
             await interaction.channel.bulkDelete(amount, true);
@@ -70,6 +82,18 @@ async function handleButton(interaction, db, ticketMessages) {
             );
         } catch (e) {
             console.error(e);
+            if (e.code === 50013) {
+                // Discord側でBotにメッセージの管理権限が付与されていない場合
+                await interaction.followUp({
+                    content: '❌ メッセージを削除できませんでした。\nBotのロールに **「メッセージの管理」** 権限が付与されているか確認してください。\n（サーバー設定 → ロール → Botのロール → 権限 → メッセージの管理 をON）',
+                    flags: MessageFlags.Ephemeral
+                }).catch(() => {});
+            } else {
+                await interaction.followUp({
+                    content: '❌ メッセージの削除中にエラーが発生しました。',
+                    flags: MessageFlags.Ephemeral
+                }).catch(() => {});
+            }
         }
         return;
     }
@@ -79,6 +103,12 @@ async function handleButton(interaction, db, ticketMessages) {
         const parts       = customId.split('_');
         const adminRoleId = parts[1];
         const key         = parts.slice(2).join('_');
+
+        // 実行前に権限を事前チェックし、未然にエラーを防ぐ
+        if (await checkBotPermissionsOrReply(interaction, [
+            PermissionsBitField.Flags.ManageChannels,
+        ])) return;
+
         await interaction.reply({ content: 'チケットチャンネルを作成しています...', flags: MessageFlags.Ephemeral });
         try {
             const channel = await interaction.guild.channels.create({
