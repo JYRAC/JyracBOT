@@ -94,6 +94,7 @@ function buildJMAQuakeEmbed(detail, title) {
 
 /**
  * 気象庁 震源・震度情報 Body から観測点リストを抽出する
+ * 都道府県名(pref)も付与し、後段の絞り込み処理(map.js)で利用する
  */
 function extractStationsFromJMA(detail) {
     const stations = [];
@@ -107,6 +108,7 @@ function extractStationsFromJMA(detail) {
                             lat: st.latlon.lat,
                             lon: st.latlon.lon,
                             int: st.Int,
+                            pref: pref.Name ?? null, // 都道府県名を保持
                         });
                     }
                 }
