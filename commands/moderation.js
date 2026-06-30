@@ -49,6 +49,8 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
     }
 
     // ── /verify ───────────────────────────────────────────────
+    // パネルはチャンネル全体に表示する（ephemeral不可）ため、
+    // deferReply 済みの場合は followUp で公開送信し、自分への返信はその旨だけにする
     if (commandName === 'verify') {
         const role  = options.getRole('role');
         const title = options.getString('title') ?? '認証パネル';
@@ -66,7 +68,10 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
                 .setStyle(ButtonStyle.Success)
         );
 
-        await interaction.editReply({ embeds: [embed], components: [row] });
+        // 公開メッセージとしてチャンネルに送信
+        await interaction.channel.send({ embeds: [embed], components: [row] });
+        // コマンド実行者への確認（ephemeral）
+        await interaction.editReply({ content: '✅ 認証パネルを設置しました。' });
         sendCommandLog(interaction, commandName, db);
         return true;
     }
@@ -84,6 +89,7 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
     }
 
     // ── /ticket ───────────────────────────────────────────────
+    // パネルはチャンネル全体に表示する（ephemeral不可）
     if (commandName === 'ticket') {
         const adminRole = options.getRole('admin-role');
         const key = `t_${Date.now()}`;
@@ -101,7 +107,10 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
                 .setStyle(ButtonStyle.Primary)
         );
 
-        await interaction.editReply({ embeds: [embed], components: [row] });
+        // 公開メッセージとしてチャンネルに送信
+        await interaction.channel.send({ embeds: [embed], components: [row] });
+        // コマンド実行者への確認（ephemeral）
+        await interaction.editReply({ content: '✅ チケットパネルを設置しました。' });
         sendCommandLog(interaction, commandName, db);
         return true;
     }

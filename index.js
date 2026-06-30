@@ -8,7 +8,6 @@ const {
     REST,
     Routes,
     SlashCommandBuilder,
-    PermissionsBitField,
     ChannelType,
     ActivityType,
     Events,
@@ -50,14 +49,14 @@ const client = new Client({
 });
 
 // ─── スラッシュコマンド定義 ────────────────────────────────────
+// ※ setDefaultMemberPermissions を廃止し、Firebase登録ユーザーなら誰でも利用可能
 const commands = [
     new SlashCommandBuilder()
         .setName('verify')
         .setDescription('認証パネルを作成します')
         .addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true))
         .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
-        .addStringOption(o => o.setName('description').setDescription('パネルの説明文'))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+        .addStringOption(o => o.setName('description').setDescription('パネルの説明文')),
 
     new SlashCommandBuilder()
         .setName('ticket')
@@ -65,40 +64,34 @@ const commands = [
         .addRoleOption(o => o.setName('admin-role').setDescription('対応を行う管理ロール').setRequired(true))
         .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
         .addStringOption(o => o.setName('description').setDescription('パネルの説明文'))
-        .addStringOption(o => o.setName('panel-desc').setDescription('チケット作成時に送信されるメッセージ'))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+        .addStringOption(o => o.setName('panel-desc').setDescription('チケット作成時に送信されるメッセージ')),
 
     new SlashCommandBuilder()
         .setName('delete')
         .setDescription('メッセージを一括削除します')
-        .addIntegerOption(o => o.setName('amount').setDescription('件数(1-100)').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
+        .addIntegerOption(o => o.setName('amount').setDescription('件数(1-100)').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('log')
         .setDescription('ログの送信先を設定または解除します')
-        .addChannelOption(o => o.setName('channel').setDescription('送信先チャンネル（指定なしで設定解除）').setRequired(false))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.Administrator),
+        .addChannelOption(o => o.setName('channel').setDescription('送信先チャンネル（指定なしで設定解除）').setRequired(false)),
 
     new SlashCommandBuilder()
         .setName('give-role')
         .setDescription('指定したユーザーにロールを付与します')
         .addUserOption(o => o.setName('target').setDescription('対象ユーザー').setRequired(true))
-        .addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+        .addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('remove-role')
         .setDescription('指定したユーザーからロールを剥奪します')
         .addUserOption(o => o.setName('target').setDescription('対象ユーザー').setRequired(true))
-        .addRoleOption(o => o.setName('role').setDescription('剥奪するロール').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+        .addRoleOption(o => o.setName('role').setDescription('剥奪するロール').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('role-confirmation')
         .setDescription('指定ユーザーが所持しているロールの一覧を確認します')
-        .addUserOption(o => o.setName('target').setDescription('確認対象のユーザー').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers),
+        .addUserOption(o => o.setName('target').setDescription('確認対象のユーザー').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('receive-notifications')
@@ -107,15 +100,13 @@ const commands = [
     new SlashCommandBuilder()
         .setName('notice')
         .setDescription('登録ユーザーにお知らせをDM送信します(管理者専用)')
-        .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+        .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('broadcast')
         .setDescription('指定ロールの所持者に一斉DMを送信します(管理者専用)')
         .addRoleOption(o => o.setName('target-role').setDescription('送信対象のロール').setRequired(true))
-        .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageRoles),
+        .addStringOption(o => o.setName('password').setDescription('認証パスワード').setRequired(true)),
 
     new SlashCommandBuilder()
         .setName('request')
@@ -131,14 +122,12 @@ const commands = [
         .addChannelOption(o => o.setName('channel').setDescription('エクスポートするチャンネル（省略時: 現在のチャンネル）').setRequired(false))
         .addIntegerOption(o => o.setName('limit').setDescription('取得するメッセージ数（省略時: チャンネル全件）').setMinValue(1).setRequired(false))
         .addStringOption(o => o.setName('before').setDescription('このメッセージID以前のメッセージを取得').setRequired(false))
-        .addStringOption(o => o.setName('after').setDescription('このメッセージID以降のメッセージを取得').setRequired(false))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages),
+        .addStringOption(o => o.setName('after').setDescription('このメッセージID以降のメッセージを取得').setRequired(false)),
 
     new SlashCommandBuilder()
         .setName('earthquake-setup')
         .setDescription('地震・緊急地震速報の通知チャンネルを設定または解除します')
-        .addChannelOption(o => o.setName('channel').setDescription('通知先チャンネル（省略すると設定を解除）').setRequired(false))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+        .addChannelOption(o => o.setName('channel').setDescription('通知先チャンネル（省略すると設定を解除）').setRequired(false)),
 
     new SlashCommandBuilder()
         .setName('earthquake-test')
@@ -166,8 +155,7 @@ const commands = [
                     { name: '北海道 (胆振地方中東部)',   value: 'hokkaido' },
                     { name: '沖縄 (沖縄本島近海)',       value: 'okinawa' },
                 )
-        )
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+        ),
 
     new SlashCommandBuilder()
         .setName('weather-setup')
@@ -175,8 +163,7 @@ const commands = [
         .addChannelOption(o => o.setName('channel')
             .setDescription('通知先チャンネル (省略すると設定を解除します)')
             .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
-        )
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+        ),
 
     new SlashCommandBuilder()
         .setName('grant-access')
@@ -227,28 +214,34 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isChatInputCommand()) {
         const { commandName } = interaction;
 
-        // オーナー専用コマンド（権限チェック不要）
+        // オーナー専用コマンド（Firebase登録チェックも不要）
         if (OWNER_COMMANDS.includes(commandName)) {
             await handleAdminCommand(interaction, db);
             return;
         }
 
         // パブリックコマンド（誰でも使える）
-        if (!PUBLIC_COMMANDS.includes(commandName)) {
-            // モーダルコマンドは deferReply 不可
-            if (!MODAL_COMMANDS.includes(commandName)) {
-                await interaction.deferReply({ flags: 64 }); // MessageFlags.Ephemeral
+        if (PUBLIC_COMMANDS.includes(commandName)) {
+            if (await handleModerationCommand(interaction, db, ticketMessages)) return;
+            if (await handleExportCommand(interaction, db)) return;
+            if (await handleEarthquakeCommand(interaction, client, db)) return;
+            if (await handleMessagingCommand(interaction, db, broadcastRoleMap)) return;
+            return;
+        }
+
+        // それ以外のコマンド: Firebase登録ユーザーのみ利用可能
+        if (!MODAL_COMMANDS.includes(commandName)) {
+            await interaction.deferReply({ flags: 64 }); // MessageFlags.Ephemeral
+        }
+        const allowed = await hasCommandAccess(interaction, db);
+        if (!allowed) {
+            const errMsg = { content: '❌ このコマンドを使用する権限がありません。\nBotオーナーにアクセス許可を申請してください。' };
+            if (MODAL_COMMANDS.includes(commandName)) {
+                await interaction.reply({ ...errMsg, flags: 64 });
+            } else {
+                await interaction.editReply(errMsg);
             }
-            const allowed = await hasCommandAccess(interaction, db);
-            if (!allowed) {
-                const errMsg = { content: '❌ このコマンドを使用する権限がありません。\nサーバー管理者またはボットオーナーに許可を申請してください。' };
-                if (MODAL_COMMANDS.includes(commandName)) {
-                    await interaction.reply({ ...errMsg, flags: 64 });
-                } else {
-                    await interaction.editReply(errMsg);
-                }
-                return;
-            }
+            return;
         }
 
         // 各コマンドハンドラに委譲
