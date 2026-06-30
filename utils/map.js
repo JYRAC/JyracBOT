@@ -79,6 +79,81 @@ function parseISO6709(coordinate) {
     return { lat, lon, depthKm };
 }
 
+// ─── 震度スケールを数値化（比較用） ─────────────────────────────
+const INT_ORDER = ['1', '2', '3', '4', '5-', '5+', '6-', '6+', '7'];
+function intRank(intStr) {
+    const i = INT_ORDER.indexOf(intStr);
+    return i === -1 ? -1 : i;
+}
+
+/**
+ * 都道府県ごとに観測点を絞り込む
+ * - 全体の最大震度が大きい場合(目安: 震度5弱以上)は、各都道府県内で
+ *   最も離れた最大震度の観測点を2つまで表示する（広域被害を視覚的に把握しやすくする）
+ * - それ未満の場合は、各都道府県で最大震度の観測点を1つだけ表示する
+ *   （震度が観測された都道府県のみ自動的に範囲を絞る）
+ * @param {{ lat: number, lon: number, int: string, pref?: string }[]} stations
+ * @returns {{ lat: number, lon: number, int: string, pref?: string }[]}
+ */
+function filterStationsByPrefecture(stations) {
+    if (!Array.isArray(stations) || stations.length === 0) return [];
+
+    // 都道府県ごとにグルーピング（pref情報がない場合は座標を仮キーとして個別扱い）
+    const groups = new Map();
+    for (const st of stations) {
+        if (st.lat == null || st.lon == null) continue;
+        const key = st.pref ?? `__nopref_${st.lat.toFixed(2)}_${st.lon.toFixed(2)}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(st);
+    }
+
+    // 全体の最大震度を判定（広域・大震度か否かの基準にする）
+    let maxRank = -1;
+    for (const st of stations) {
+        const r = intRank(st.int);
+        if (r > maxRank) maxRank = r;
+    }
+    const isLarge = maxRank >= intRank('5-'); // 震度5弱以上を「大きい地震」とみなす
+
+    const result = [];
+    for (const list of groups.values()) {
+        // 県内で震度が高い順に並べる
+        const sorted = [...list].sort((a, b) => intRank(b.int) - intRank(a.int));
+        const topRank = intRank(sorted[0].int);
+        const topStations = sorted.filter(s => intRank(s.int) === topRank);
+
+        if (!isLarge || topStations.length === 1) {
+            // 通常時、または同じ最大震度の観測点が1つしかない場合は1点のみ表示
+            result.push(sorted[0]);
+            continue;
+        }
+
+        // 大きい地震の場合: 県内で最大震度を観測した地点のうち、
+        // 最も距離が離れている2点を選んで表示する
+        let bestPair = [topStations[0], topStations[0]];
+        let bestDist = -1;
+        for (let i = 0; i < topStations.length; i++) {
+            for (let j = i + 1; j < topStations.length; j++) {
+                const dLat = topStations[i].lat - topStations[j].lat;
+                const dLon = topStations[i].lon - topStations[j].lon;
+                const dist = dLat * dLat + dLon * dLon;
+                if (dist > bestDist) {
+                    bestDist = dist;
+                    bestPair = [topStations[i], topStations[j]];
+                }
+            }
+        }
+        if (bestDist <= 0) {
+            // 離れた2点が見つからない(候補1点のみ)場合は1点のみ表示
+            result.push(topStations[0]);
+        } else {
+            result.push(bestPair[0], bestPair[1]);
+        }
+    }
+
+    return result;
+}
+
 /**
  * 震源地と各観測点を重ねた地図画像バッファを生成する
  * @param {number} epicLat
@@ -88,6 +163,9 @@ function parseISO6709(coordinate) {
  */
 async function buildJMAMapAttachment(epicLat, epicLon, stations = []) {
     if (epicLat == null || epicLon == null) return null;
+
+    // 都道府県ごとに観測点を絞り込み（表示が多すぎて見づらくなるのを防ぐ）
+    const filteredStations = filterStationsByPrefecture(stations);
 
     const zoom = 8;
     const TILE = 256;
@@ -117,7 +195,7 @@ async function buildJMAMapAttachment(epicLat, epicLon, stations = []) {
         .map(({ gx, gy, buf }) => ({ input: buf, left: gx * TILE, top: gy * TILE }));
 
     const drawnCoords = new Set();
-    for (const st of stations) {
+    for (const st of filteredStations) {
         if (st.lat == null || st.lon == null) continue;
         const coordKey = `${st.lat.toFixed(2)}_${st.lon.toFixed(2)}`;
         if (drawnCoords.has(coordKey)) continue;
@@ -180,4 +258,11 @@ async function buildJMAMapAttachment(epicLat, epicLon, stations = []) {
         .toBuffer();
 }
 
-module.exports = { latLonToTileAndPixel, fetchGSITile, getScaleSvg, parseISO6709, buildJMAMapAttachment };
+module.exports = {
+    latLonToTileAndPixel,
+    fetchGSITile,
+    getScaleSvg,
+    parseISO6709,
+    filterStationsByPrefecture,
+    buildJMAMapAttachment,
+};
