@@ -23,7 +23,7 @@ function latLonToTileAndPixel(lat, lon, zoom) {
  * 国土地理院タイルを取得する
  */
 async function fetchGSITile(zoom, x, y) {
-    const url = `https://cyberjapandata.gsi.go.jp/xyz/blank/${zoom}/${x}/${y}.png`;
+    const url = `https://cyberjapandata.gsi.go.jp/xyz/pale/${zoom}/${x}/${y}.png`;
     const res = await fetch(url, {
         headers: { 'User-Agent': 'JYRACDiscordBot/1.0 (earthquake-notify)' }
     });
@@ -246,7 +246,7 @@ async function buildJMAMapAttachment(epicLat, epicLon, stations = []) {
     const cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, Math.floor(markerAbsY - OUT_H / 2)));
 
     const fullCanvas = await sharp({
-        create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 220, g: 220, b: 220, alpha: 1 } }
+        create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 192, g: 216, b: 240, alpha: 1 } }
     })
         .composite(composites)
         .png()
