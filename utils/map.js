@@ -1,63 +1,16 @@
 'use strict';
 
-const sharp = require('sharp');
+const { createCanvas } = require('canvas');
+const fs = require('fs');
+const path = require('path');
 
-/**
- * 緯度経度をタイル座標とピクセル座標に変換する
- */
-function latLonToTileAndPixel(lat, lon, zoom) {
-    const n = Math.pow(2, zoom);
-    const latRad = lat * Math.PI / 180;
-    const tileX = Math.floor((lon + 180) / 360 * n);
-    const tileY = Math.floor(
-        (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n
-    );
-    const pixX = Math.floor(((lon + 180) / 360 * n - tileX) * 256);
-    const pixY = Math.floor(
-        ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n - tileY) * 256
-    );
-    return { tileX, tileY, pixX, pixY };
-}
-
-/**
- * 国土地理院タイルを取得する
- */
-async function fetchGSITile(zoom, x, y) {
-    const url = `https://cyberjapandata.gsi.go.jp/xyz/pale/${zoom}/${x}/${y}.png`;
-    const res = await fetch(url, {
-        headers: { 'User-Agent': 'JYRACDiscordBot/1.0 (earthquake-notify)' }
-    });
-    if (!res.ok) throw new Error(`GSI Tile ${res.status}: ${url}`);
-    return Buffer.from(await res.arrayBuffer());
-}
-
-/**
- * 震度スタンプSVGを生成する
- * 日本語文字を使わず記号表記（文字化け対策）
- */
-function getScaleSvg(intStr) {
-    const scaleMap = {
-        '1':  { text: '1',  bg: '#f2f2ff', c: '#000000' },
-        '2':  { text: '2',  bg: '#00aaff', c: '#000000' },
-        '3':  { text: '3',  bg: '#0041ff', c: '#ffffff' },
-        '4':  { text: '4',  bg: '#fae696', c: '#000000' },
-        '5-': { text: '5-', bg: '#ffe600', c: '#000000' },
-        '5+': { text: '5+', bg: '#ff9900', c: '#000000' },
-        '6-': { text: '6-', bg: '#ff2800', c: '#ffffff' },
-        '6+': { text: '6+', bg: '#a50021', c: '#ffffff' },
-        '7':  { text: '7',  bg: '#b40068', c: '#ffffff' },
-    };
-    const s = scaleMap[intStr];
-    if (!s) return null;
-    const fontSize = intStr.length > 1 ? 11 : 13;
-    return Buffer.from(
-        `<?xml version="1.0" encoding="UTF-8"?>` +
-        `<svg width="24" height="24" xmlns="http://www.w3.org/2000/svg">` +
-        `<rect width="24" height="24" rx="4" fill="${s.bg}" stroke="#555" stroke-width="1"/>` +
-        `<text x="12" y="17" font-family="sans-serif" font-size="${fontSize}" font-weight="bold" fill="${s.c}" text-anchor="middle">${s.text}</text>` +
-        `</svg>`,
-        'utf8'
-    );
+// 1. 事前に用意したGeoJSON（都道府県境データ）を読み込む
+const geojsonPath = path.join(__dirname, 'japan.json');
+let geojsonData = null;
+if (fs.existsSync(geojsonPath)) {
+    geojsonData = JSON.parse(fs.readFileSync(geojsonPath, 'utf8'));
+} else {
+    console.error('⚠️ [map.js] japan.json が見つかりません。地図の陸地が描画されません。');
 }
 
 /**
@@ -87,18 +40,11 @@ function intRank(intStr) {
 }
 
 /**
- * 都道府県ごとに観測点を絞り込む
- * - 全体の最大震度が大きい場合(目安: 震度5弱以上)は、各都道府県内で
- *   最も離れた最大震度の観測点を2つまで表示する（広域被害を視覚的に把握しやすくする）
- * - それ未満の場合は、各都道府県で最大震度の観測点を1つだけ表示する
- *   （震度が観測された都道府県のみ自動的に範囲を絞る）
- * @param {{ lat: number, lon: number, int: string, pref?: string }[]} stations
- * @returns {{ lat: number, lon: number, int: string, pref?: string }[]}
+ * 都道府県ごとに観測点を絞り込む（ユーザーオリジナルロジックを保持）
  */
 function filterStationsByPrefecture(stations) {
     if (!Array.isArray(stations) || stations.length === 0) return [];
 
-    // 都道府県ごとにグルーピング（pref情報がない場合は座標を仮キーとして個別扱い）
     const groups = new Map();
     for (const st of stations) {
         if (st.lat == null || st.lon == null) continue;
@@ -107,29 +53,24 @@ function filterStationsByPrefecture(stations) {
         groups.get(key).push(st);
     }
 
-    // 全体の最大震度を判定（広域・大震度か否かの基準にする）
     let maxRank = -1;
     for (const st of stations) {
         const r = intRank(st.int);
         if (r > maxRank) maxRank = r;
     }
-    const isLarge = maxRank >= intRank('5-'); // 震度5弱以上を「大きい地震」とみなす
+    const isLarge = maxRank >= intRank('5-'); 
 
     const result = [];
     for (const list of groups.values()) {
-        // 県内で震度が高い順に並べる
         const sorted = [...list].sort((a, b) => intRank(b.int) - intRank(a.int));
         const topRank = intRank(sorted[0].int);
         const topStations = sorted.filter(s => intRank(s.int) === topRank);
 
         if (!isLarge || topStations.length === 1) {
-            // 通常時、または同じ最大震度の観測点が1つしかない場合は1点のみ表示
             result.push(sorted[0]);
             continue;
         }
 
-        // 大きい地震の場合: 県内で最大震度を観測した地点のうち、
-        // 最も距離が離れている2点を選んで表示する
         let bestPair = [topStations[0], topStations[0]];
         let bestDist = -1;
         for (let i = 0; i < topStations.length; i++) {
@@ -144,7 +85,6 @@ function filterStationsByPrefecture(stations) {
             }
         }
         if (bestDist <= 0) {
-            // 離れた2点が見つからない(候補1点のみ)場合は1点のみ表示
             result.push(topStations[0]);
         } else {
             result.push(bestPair[0], bestPair[1]);
@@ -155,114 +95,215 @@ function filterStationsByPrefecture(stations) {
 }
 
 /**
+ * 緯度経度をCanvasのXY座標に変換する
+ */
+function latLonToXY(lat, lon, mapRange, width, height) {
+    const x = ((lon - mapRange.minLon) / (mapRange.maxLon - mapRange.minLon)) * width;
+    const y = height - ((lat - mapRange.minLat) / (mapRange.maxLat - mapRange.minLat)) * height;
+    return { x, y };
+}
+
+/**
+ * 角丸の四角形を描画するヘルパー
+ */
+function drawRoundRect(ctx, x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+}
+
+/**
+ * 震度スタンプをCanvasに描画する（SVGからCanvas描画に最適化）
+ */
+function drawScaleMarker(ctx, x, y, intStr) {
+    const scaleMap = {
+        '1':  { text: '1',  bg: '#f2f2ff', c: '#000000' },
+        '2':  { text: '2',  bg: '#00aaff', c: '#000000' },
+        '3':  { text: '3',  bg: '#0041ff', c: '#ffffff' },
+        '4':  { text: '4',  bg: '#fae696', c: '#000000' },
+        '5-': { text: '5-', bg: '#ffe600', c: '#000000' },
+        '5+': { text: '5+', bg: '#ff9900', c: '#000000' },
+        '6-': { text: '6-', bg: '#ff2800', c: '#ffffff' },
+        '6+': { text: '6+', bg: '#a50021', c: '#ffffff' },
+        '7':  { text: '7',  bg: '#b40068', c: '#ffffff' },
+    };
+    const s = scaleMap[intStr];
+    if (!s) return;
+
+    const size = 24;
+    const radius = 4;
+    const rx = x - size / 2;
+    const ry = y - size / 2;
+
+    // 背景と枠線
+    ctx.fillStyle = s.bg;
+    ctx.strokeStyle = '#555555';
+    ctx.lineWidth = 1;
+    drawRoundRect(ctx, rx, ry, size, size, radius);
+    ctx.fill();
+    ctx.stroke();
+
+    // テキスト
+    const fontSize = intStr.length > 1 ? 11 : 13;
+    ctx.fillStyle = s.c;
+    ctx.font = `bold ${fontSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    // Canvasの仕様上、少しYをズラすとど真ん中に来ます
+    ctx.fillText(s.text, x, y + 1.5); 
+}
+
+/**
  * 震源地と各観測点を重ねた地図画像バッファを生成する
- * @param {number} epicLat
- * @param {number} epicLon
- * @param {{ lat: number, lon: number, int: string }[]} stations
+ * @param {number} centerLat
+ * @param {number} centerLon
+ * @param {{ lat: number, lon: number, int: string, pref?: string }[]} stations
  * @returns {Promise<Buffer|null>}
  */
-async function buildJMAMapAttachment(epicLat, epicLon, stations = []) {
-    if (epicLat == null || epicLon == null) return null;
+async function buildJMAMapAttachment(centerLat, centerLon, stations = []) {
+    if (centerLat == null || centerLon == null) return null;
 
-    // 都道府県ごとに観測点を絞り込み（表示が多すぎて見づらくなるのを防ぐ）
+    // オリジナルの賢いフィルター関数を通す
     const filteredStations = filterStationsByPrefecture(stations);
 
-    const zoom = 8;
-    const TILE = 256;
-    const HALF = 1;
-    const GRID = HALF * 2 + 1;
+    const width = 600;
+    const height = 600;
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext('2d');
 
-    const { tileX: cx, tileY: cy, pixX: markerPixX, pixY: markerPixY }
-        = latLonToTileAndPixel(epicLat, epicLon, zoom);
+    // ── 1. 描画範囲の動的決定（自動ズーム） ──
+    let minLat = centerLat;
+    let maxLat = centerLat;
+    let minLon = centerLon;
+    let maxLon = centerLon;
 
-    const fetches = [];
-    for (let dy = -HALF; dy <= HALF; dy++) {
-        for (let dx = -HALF; dx <= HALF; dx++) {
-            const gx = dx + HALF;
-            const gy = dy + HALF;
-            fetches.push(
-                fetchGSITile(zoom, cx + dx, cy + dy)
-                    .then(buf => ({ gx, gy, buf }))
-                    .catch(() => null)
-            );
-        }
-    }
-    const tiles = await Promise.all(fetches);
-    const canvasSize = TILE * GRID;
-
-    const composites = tiles
-        .filter(t => t !== null)
-        .map(({ gx, gy, buf }) => ({ input: buf, left: gx * TILE, top: gy * TILE }));
-
-    const drawnCoords = new Set();
     for (const st of filteredStations) {
-        if (st.lat == null || st.lon == null) continue;
-        const coordKey = `${st.lat.toFixed(2)}_${st.lon.toFixed(2)}`;
-        if (drawnCoords.has(coordKey)) continue;
+        if (st.lat < minLat) minLat = st.lat;
+        if (st.lat > maxLat) maxLat = st.lat;
+        if (st.lon < minLon) minLon = st.lon;
+        if (st.lon > maxLon) maxLon = st.lon;
+    }
 
-        const { tileX: px, tileY: py, pixX: pPixX, pixY: pPixY }
-            = latLonToTileAndPixel(st.lat, st.lon, zoom);
+    // 画面端の余白
+    const margin = 0.8;
+    minLat -= margin;
+    maxLat += margin;
+    minLon -= margin;
+    maxLon += margin;
 
-        const diffX = px - (cx - HALF);
-        const diffY = py - (cy - HALF);
+    // ズームしすぎ防止 (最低でも約4度分は表示する)
+    const minRange = 4.0;
+    let latDiff = maxLat - minLat;
+    let lonDiff = maxLon - minLon;
 
-        if (diffX >= 0 && diffX < GRID && diffY >= 0 && diffY < GRID) {
-            const absX = diffX * TILE + pPixX;
-            const absY = diffY * TILE + pPixY;
-            const svgBuf = getScaleSvg(st.int);
-            if (svgBuf) {
-                composites.push({
-                    input: svgBuf,
-                    left: Math.max(0, Math.min(canvasSize - 24, Math.floor(absX - 12))),
-                    top:  Math.max(0, Math.min(canvasSize - 24, Math.floor(absY - 12))),
-                });
-                drawnCoords.add(coordKey);
+    if (latDiff < minRange) {
+        const latCenter = (maxLat + minLat) / 2;
+        minLat = latCenter - minRange / 2;
+        maxLat = latCenter + minRange / 2;
+        latDiff = minRange;
+    }
+    if (lonDiff < minRange) {
+        const lonCenter = (maxLon + minLon) / 2;
+        minLon = lonCenter - minRange / 2;
+        maxLon = lonCenter + minRange / 2;
+        lonDiff = minRange;
+    }
+
+    // ── 2. 歪み補正（日本が横に伸びないようにする） ──
+    const cosLat = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
+    const relativeLonDiff = lonDiff * cosLat;
+    const maxRelDiff = Math.max(latDiff, relativeLonDiff);
+    
+    const finalLatCenter = (maxLat + minLat) / 2;
+    const finalLonCenter = (maxLon + minLon) / 2;
+
+    const mapRange = {
+        minLat: finalLatCenter - maxRelDiff / 2,
+        maxLat: finalLatCenter + maxRelDiff / 2,
+        minLon: finalLonCenter - (maxRelDiff / cosLat) / 2,
+        maxLon: finalLonCenter + (maxRelDiff / cosLat) / 2,
+    };
+
+    // ── 3. 海を塗る ──
+    ctx.fillStyle = '#b3d1ff'; 
+    ctx.fillRect(0, 0, width, height);
+
+    // ── 4. 陸地（都道府県）を描画する ──
+    if (geojsonData) {
+        ctx.strokeStyle = '#777777';
+        ctx.lineWidth = 1;
+
+        for (const feature of geojsonData.features) {
+            const geometry = feature.geometry;
+            if (!geometry) continue;
+
+            const listCoordinates = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates;
+
+            for (const polygons of listCoordinates) {
+                for (const rings of polygons) {
+                    ctx.beginPath();
+                    let isFirst = true;
+
+                    for (const coord of rings) {
+                        const { x, y } = latLonToXY(coord[1], coord[0], mapRange, width, height);
+                        if (isFirst) {
+                            ctx.moveTo(x, y);
+                            isFirst = false;
+                        } else {
+                            ctx.lineTo(x, y);
+                        }
+                    }
+                    
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fill();
+                    ctx.stroke();
+                }
             }
         }
     }
 
-    const markerAbsX = HALF * TILE + markerPixX;
-    const markerAbsY = HALF * TILE + markerPixY;
+    // ── 5. 観測点（オリジナルの四角い震度スタンプ）を描画 ──
+    for (const st of filteredStations) {
+        const { x, y } = latLonToXY(st.lat, st.lon, mapRange, width, height);
+        // 描画範囲外はスキップ
+        if (x < 0 || x > width || y < 0 || y > height) continue;
+        drawScaleMarker(ctx, x, y, st.int);
+    }
 
-    const ARM = 16, SW = 5, PAD = 12;
-    const sz = (ARM + PAD) * 2;
-    const h = sz / 2;
-    const markerSvg = Buffer.from(
-        `<svg width="${sz}" height="${sz}" xmlns="http://www.w3.org/2000/svg">` +
-        `<line x1="${h-ARM}" y1="${h-ARM}" x2="${h+ARM}" y2="${h+ARM}" stroke="white" stroke-width="${SW+4}" stroke-linecap="round"/>` +
-        `<line x1="${h+ARM}" y1="${h-ARM}" x2="${h-ARM}" y2="${h+ARM}" stroke="white" stroke-width="${SW+4}" stroke-linecap="round"/>` +
-        `<line x1="${h-ARM}" y1="${h-ARM}" x2="${h+ARM}" y2="${h+ARM}" stroke="#EE0000" stroke-width="${SW}" stroke-linecap="round"/>` +
-        `<line x1="${h+ARM}" y1="${h-ARM}" x2="${h-ARM}" y2="${h+ARM}" stroke="#EE0000" stroke-width="${SW}" stroke-linecap="round"/>` +
-        `</svg>`
-    );
-    composites.push({
-        input: markerSvg,
-        left: Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsX - h))),
-        top:  Math.max(0, Math.min(canvasSize - sz, Math.floor(markerAbsY - h))),
-    });
+    // ── 6. 震源地（オリジナルの白フチ赤×マーカー）を描画 ──
+    const centerPos = latLonToXY(centerLat, centerLon, mapRange, width, height);
+    const ARM = 16;
+    const SW = 5;
 
-    const OUT_W = canvasSize, OUT_H = 500;
-    const cropLeft = Math.max(0, Math.min(canvasSize - OUT_W, Math.floor(markerAbsX - OUT_W / 2)));
-    const cropTop  = Math.max(0, Math.min(canvasSize - OUT_H, Math.floor(markerAbsY - OUT_H / 2)));
+    ctx.lineCap = 'round';
+    // 白いフチ
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = SW + 4;
+    ctx.beginPath();
+    ctx.moveTo(centerPos.x - ARM, centerPos.y - ARM); ctx.lineTo(centerPos.x + ARM, centerPos.y + ARM);
+    ctx.moveTo(centerPos.x + ARM, centerPos.y - ARM); ctx.lineTo(centerPos.x - ARM, centerPos.y + ARM);
+    ctx.stroke();
 
-    const fullCanvas = await sharp({
-        create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 192, g: 216, b: 240, alpha: 1 } }
-    })
-        .composite(composites)
-        .png()
-        .toBuffer();
+    // 赤いバツ
+    ctx.strokeStyle = '#EE0000';
+    ctx.lineWidth = SW;
+    ctx.beginPath();
+    ctx.moveTo(centerPos.x - ARM, centerPos.y - ARM); ctx.lineTo(centerPos.x + ARM, centerPos.y + ARM);
+    ctx.moveTo(centerPos.x + ARM, centerPos.y - ARM); ctx.lineTo(centerPos.x - ARM, centerPos.y + ARM);
+    ctx.stroke();
 
-    return await sharp(fullCanvas)
-        .extract({ left: cropLeft, top: cropTop, width: OUT_W, height: OUT_H })
-        .png()
-        .toBuffer();
+    return canvas.toBuffer('image/png');
 }
 
 module.exports = {
-    latLonToTileAndPixel,
-    fetchGSITile,
-    getScaleSvg,
     parseISO6709,
-    filterStationsByPrefecture,
     buildJMAMapAttachment,
 };
