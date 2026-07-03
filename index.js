@@ -28,6 +28,13 @@ const { handleExportCommand }     = require('./commands/export');
 const { handleEarthquakeCommand } = require('./commands/earthquake');
 
 const { handleButton, handleModal, handleSelectMenu } = require('./interactions/handlers');
+const { isCanvasAvailable } = require('./utils/map');
+
+// ─── 起動時診断ログ ─────────────────────────────────────────────
+// 地震発生を待たずに、起動直後のログで地図描画が可能かどうかを確認できるようにする。
+// Renderのログタブで "[起動診断]" を検索すればすぐ分かる。
+console.log(`[起動診断] Node.js: ${process.version} / platform: ${process.platform} / arch: ${process.arch}`);
+console.log(`[起動診断] @napi-rs/canvas 利用可否: ${isCanvasAvailable() ? '✅ OK' : '❌ NG（地図は描画されません。上のエラーログを確認してください）'}`);
 
 // ─── Firebase 初期化 ───────────────────────────────────────────
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);

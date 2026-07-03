@@ -193,6 +193,47 @@ function startEarthquakeMonitor(client, db) {
     const startedAt = Date.now();
     const seenIds = new Set();
 
+    // ── 既送信イベントの永続化（再起動をまたいで重複送信を防ぐ）────
+    // Bot が再起動しても、気象庁側で report の更新時刻（rdt）が
+    // 更新され続ける限り「起動前より新しい」と判定されてしまい、
+    // 過去に送信済みの地震情報が再送されることがあった。
+    // これを防ぐため、送信済みキーを Firestore に永続化し、
+    // 起動時に読み込んでおく。
+    const SEEN_COLLECTION = 'earthquake_sent_events';
+    const SEEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7日間保持
+
+    async function loadSeenIds() {
+        try {
+            const cutoff = Date.now() - SEEN_TTL_MS;
+            const snap = await db.collection(SEEN_COLLECTION).get();
+            const staleDocs = [];
+            snap.forEach(doc => {
+                const data = doc.data();
+                if ((data.sentAt ?? 0) < cutoff) {
+                    staleDocs.push(doc.ref);
+                } else {
+                    seenIds.add(doc.id);
+                }
+            });
+            // 古い記録は掃除しておく（コレクションの肥大化防止）
+            for (const ref of staleDocs) {
+                await ref.delete().catch(() => {});
+            }
+            console.log(`[地震監視] 送信済みイベント ${seenIds.size} 件を読み込みました`);
+        } catch (e) {
+            console.error('[地震監視] 送信済みイベントの読み込みに失敗しました:', e.message);
+        }
+    }
+
+    async function markSeen(key) {
+        seenIds.add(key);
+        try {
+            await db.collection(SEEN_COLLECTION).doc(key).set({ sentAt: Date.now() });
+        } catch (e) {
+            console.error('[地震監視] 送信済みイベントの保存に失敗しました:', e.message);
+        }
+    }
+
     async function getNotifyChannels() {
         const snap = await db.collection('earthquake_settings').get();
         return snap.docs.map(d => d.data().channelId).filter(Boolean);
@@ -226,7 +267,7 @@ function startEarthquakeMonitor(client, db) {
                 const serial  = item.issue?.serial  ?? '0';
                 const eewKey  = `eew_${eventId}_${serial}`;
                 if (seenIds.has(eewKey)) continue;
-                seenIds.add(eewKey);
+                await markSeen(eewKey);
 
                 // テスト報は無視
                 if (item.test) continue;
@@ -316,7 +357,7 @@ function startEarthquakeMonitor(client, db) {
                 const uniqueKey = `${eid}_${ttl}`;
 
                 if (seenIds.has(uniqueKey)) continue;
-                seenIds.add(uniqueKey);
+                await markSeen(uniqueKey);
 
                 // ── 震源・震度情報（確定報）────────────────────────
                 if (ttl === '震源・震度情報' && item.json) {
@@ -335,7 +376,7 @@ function startEarthquakeMonitor(client, db) {
 
                         if (coord) {
                             const buf = await buildJMAMapAttachment(coord.lat, coord.lon, stations)
-                                .catch(e => { console.error('[地図生成エラー]', e.message); return null; });
+                                .catch(e => { console.error('[地図生成エラー]', e.stack || e.message || e); return null; });
                             if (buf) {
                                 const attachment = new AttachmentBuilder(buf, { name: 'map.png' });
                                 embed.setImage('attachment://map.png');
@@ -473,7 +514,8 @@ function startEarthquakeMonitor(client, db) {
 
                         const payload = { embeds: [embed] };
                         if (coord) {
-                            const buf = await buildJMAMapAttachment(coord.lat, coord.lon, []).catch(() => null);
+                            const buf = await buildJMAMapAttachment(coord.lat, coord.lon, [])
+                                .catch(e => { console.error('[地図生成エラー]', e.stack || e.message || e); return null; });
                             if (buf) {
                                 const attachment = new AttachmentBuilder(buf, { name: 'map.png' });
                                 embed.setImage('attachment://map.png');
@@ -493,12 +535,15 @@ function startEarthquakeMonitor(client, db) {
         }
     }
 
-    console.log('[地震監視] 気象庁API HTTPポーリング開始 (30秒間隔)');
-    console.log('[EEW監視] P2P地震情報API HTTPポーリング開始 (30秒間隔)');
-    poll();
-    pollEEW();
-    setInterval(poll,    POLL_INTERVAL);
-    setInterval(pollEEW, POLL_INTERVAL);
+    (async () => {
+        await loadSeenIds();
+        console.log('[地震監視] 気象庁API HTTPポーリング開始 (30秒間隔)');
+        console.log('[EEW監視] P2P地震情報API HTTPポーリング開始 (30秒間隔)');
+        poll();
+        pollEEW();
+        setInterval(poll,    POLL_INTERVAL);
+        setInterval(pollEEW, POLL_INTERVAL);
+    })();
 }
 
 module.exports = {

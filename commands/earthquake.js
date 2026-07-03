@@ -126,7 +126,8 @@ async function handleEarthquakeCommand(interaction, client, db) {
         async function sendWithJMAMap(embed, lat, lon, stations = []) {
             const payload = { embeds: [embed] };
             if (lat != null && lon != null) {
-                const buf = await buildJMAMapAttachment(lat, lon, stations).catch(() => null);
+                const buf = await buildJMAMapAttachment(lat, lon, stations)
+                    .catch(e => { console.error('[地図生成エラー]', e.stack || e.message || e); return null; });
                 if (buf) {
                     const attachment = new AttachmentBuilder(buf, { name: 'map.png' });
                     embed.setImage('attachment://map.png');
@@ -190,7 +191,8 @@ async function handleEarthquakeCommand(interaction, client, db) {
                     )
                     .setTimestamp()
                     .setFooter({ text: '気象庁 震源情報（テスト）' });
-                const buf = await buildJMAMapAttachment(loc.lat, loc.lon, []).catch(() => null);
+                const buf = await buildJMAMapAttachment(loc.lat, loc.lon, [])
+                    .catch(e => { console.error('[地図生成エラー]', e.stack || e.message || e); return null; });
                 const payload2 = { embeds: [srcEmbed] };
                 if (buf) {
                     const a = new AttachmentBuilder(buf, { name: 'map.png' });

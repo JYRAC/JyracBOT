@@ -1,16 +1,43 @@
 'use strict';
 
-const { createCanvas } = require('canvas');
 const fs = require('fs');
 const path = require('path');
 
-// 1. 事前に用意したGeoJSON（都道府県境データ）を読み込む
+// 1. @napi-rs/canvas の読み込み
+// Render等の本番環境ではネイティブバイナリの読み込み(prebuild)に失敗するケースがあるため、
+// ここで確実に例外を捕捉してプロセス全体がクラッシュしないようにする。
+// これが握りつぶされて起動時に見えないと「地図だけ描画されない」原因の特定が非常に困難になる。
+let createCanvas = null;
+let canvasLoadError = null;
+try {
+    ({ createCanvas } = require('@napi-rs/canvas'));
+} catch (e) {
+    canvasLoadError = e;
+    console.error('❌ [map.js] @napi-rs/canvas の読み込みに失敗しました。地図は一切描画できません。');
+    console.error('❌ [map.js] 原因: Node.jsのバージョン/OS/CPUアーキテクチャが対応するprebuildと一致していない可能性があります。');
+    console.error(e.stack || e);
+}
+
+// 2. 事前に用意したGeoJSON（都道府県境データ）を読み込む
 const geojsonPath = path.join(__dirname, 'japan.json');
 let geojsonData = null;
-if (fs.existsSync(geojsonPath)) {
-    geojsonData = JSON.parse(fs.readFileSync(geojsonPath, 'utf8'));
-} else {
-    console.error('⚠️ [map.js] japan.json が見つかりません。地図の陸地が描画されません。');
+try {
+    if (fs.existsSync(geojsonPath)) {
+        geojsonData = JSON.parse(fs.readFileSync(geojsonPath, 'utf8'));
+    } else {
+        console.error('⚠️ [map.js] japan.json が見つかりません（パス: ' + geojsonPath + '）。地図の陸地が描画されません。');
+    }
+} catch (e) {
+    console.error('⚠️ [map.js] japan.json の読み込み/パースに失敗しました。地図の陸地が描画されません。');
+    console.error(e.stack || e);
+    geojsonData = null;
+}
+
+/**
+ * @napi-rs/canvas が正常に利用可能かどうか
+ */
+function isCanvasAvailable() {
+    return createCanvas !== null;
 }
 
 /**
@@ -171,6 +198,12 @@ function drawScaleMarker(ctx, x, y, intStr) {
 async function buildJMAMapAttachment(centerLat, centerLon, stations = []) {
     if (centerLat == null || centerLon == null) return null;
 
+    if (!isCanvasAvailable()) {
+        console.error('[地図生成エラー] @napi-rs/canvas が利用できないため地図を生成できません。'
+            + (canvasLoadError ? ` 詳細: ${canvasLoadError.message}` : ''));
+        return null;
+    }
+
     // オリジナルの賢いフィルター関数を通す
     const filteredStations = filterStationsByPrefecture(stations);
 
@@ -306,4 +339,5 @@ async function buildJMAMapAttachment(centerLat, centerLon, stations = []) {
 module.exports = {
     parseISO6709,
     buildJMAMapAttachment,
+    isCanvasAvailable,
 };
