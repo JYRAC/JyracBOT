@@ -10,6 +10,7 @@ const {
     MessageFlags,
 } = require('discord.js');
 const { sendLog, checkBotPermissionsOrReply } = require('../utils/permissions');
+const { handleEntryMessageModal } = require('../commands/entryMessage');
 
 // ─── ボタン操作 ────────────────────────────────────────────────
 
@@ -244,6 +245,9 @@ async function handleModal(interaction, client, db, broadcastRoleMap) {
         return;
     }
 
+    // /entry-message モーダル
+    if (await handleEntryMessageModal(interaction, db)) return;
+
     // /broadcast モーダル
     if (interaction.customId === 'broadcast_modal') {
         const roleId = broadcastRoleMap.get(interaction.user.id);
@@ -298,6 +302,7 @@ async function handleSelectMenu(interaction) {
         h_ticket:    '**/ticket**\nチャンネル管理権限が必要です。ユーザー個別の問い合わせ用プライベートチャンネルを開設するパネルを設置します。',
         h_log:       '**/log**\n管理者権限が必要です。認証や一括削除のアクションが行われた際に送信されるログチャンネルの指定・解除を行います。',
         h_role:      '**/role-confirmation**\nモデレーター権限が必要です。対象のユーザーが現在持っている全ロールの一覧を表示します。',
+        h_entry:     '**/entry-message**\nモーダルで入力したメッセージを、以降このサーバーに新規参加したメンバーのDMへテキストのまま自動送信します。再度実行すると内容を上書きできます。',
         h_export:    '**/export**\nメッセージ管理権限が必要です。指定したチャンネルのメッセージを.txtファイルにエクスポートします。\nオプション: `channel` `limit(1〜10000)` `before` `after`',
         h_earthquake:'**/earthquake-setup**\nチャンネル管理権限が必要です。地震情報をリアルタイムで通知するチャンネルを設定します。\n`channel` を省略すると設定を解除します。\nデータ元: 気象庁非公式JSON API\n通知される情報: 震度速報（震度3以上）・震源に関する情報・震源・震度情報（確定報）',
         h_eqtest:    '**/earthquake-test**\nチャンネル管理権限が必要です。設定済みの通知チャンネルに疑似地震通知を送信して表示を確認できます。\ntype:\n　・震源・震度情報（確定報）\n　・EEW形式\n　・震度速報→震源情報→確定報 の連続テスト\n　・津波警報・注意報\nlocation: 震源地プリセット（省略時はランダム）',
