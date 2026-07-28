@@ -26,6 +26,7 @@ const { handleModerationCommand } = require('./commands/moderation');
 const { handleMessagingCommand }  = require('./commands/messaging');
 const { handleExportCommand }     = require('./commands/export');
 const { handleEarthquakeCommand } = require('./commands/earthquake');
+const { handleEntryMessageCommand } = require('./commands/entryMessage');
 
 const { handleButton, handleModal, handleSelectMenu } = require('./interactions/handlers');
 const { isCanvasAvailable } = require('./utils/map');
@@ -120,6 +121,10 @@ const commands = [
         .setDescription('新規コマンドの作成依頼を送ります'),
 
     new SlashCommandBuilder()
+        .setName('entry-message')
+        .setDescription('新規メンバー参加時にDM送信するメッセージを設定します'),
+
+    new SlashCommandBuilder()
         .setName('help')
         .setDescription('コマンドの一覧と詳細を表示します'),
 
@@ -209,6 +214,24 @@ client.once(Events.ClientReady, async () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
+// ─── 新規メンバー参加イベント ───────────────────────────────────
+// /entry-message で設定されたメッセージを、そのままテキストとして新規メンバーのDMに送信する
+client.on(Events.GuildMemberAdd, async member => {
+    if (member.user.bot) return;
+
+    try {
+        const doc = await db.collection('entry_message_settings').doc(member.guild.id).get();
+        if (!doc.exists) return;
+
+        const message = doc.data()?.message;
+        if (!message) return;
+
+        await member.send(message);
+    } catch (e) {
+        console.error('[入室時DM送信エラー]', e);
+    }
+});
+
 // ─── Keep Alive (Render用) ─────────────────────────────────────
 const app = express();
 app.get('/', (req, res) => res.send('Bot is online!'));
@@ -256,6 +279,7 @@ client.on(Events.InteractionCreate, async interaction => {
         if (await handleExportCommand(interaction, db)) return;
         if (await handleEarthquakeCommand(interaction, client, db)) return;
         if (await handleMessagingCommand(interaction, db, broadcastRoleMap)) return;
+        if (await handleEntryMessageCommand(interaction, db)) return;
     }
 
     // 2. モーダル
