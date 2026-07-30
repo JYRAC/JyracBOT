@@ -5,12 +5,14 @@ require('dotenv').config();
 const {
     Client,
     GatewayIntentBits,
+    Partials,
     REST,
     Routes,
     SlashCommandBuilder,
     ChannelType,
     ActivityType,
     Events,
+    EmbedBuilder,
 } = require('discord.js');
 
 const express = require('express');
@@ -18,15 +20,15 @@ const admin   = require('firebase-admin');
 
 // ─── モジュール読み込み ────────────────────────────────────────
 const { ACTIVITIES, PUBLIC_COMMANDS, MODAL_COMMANDS, OWNER_COMMANDS } = require('./config');
-const { hasCommandAccess, sendCommandLog }  = require('./utils/permissions');
+const { hasCommandAccess, sendCommandLog, sendLog } = require('./utils/permissions');
 const { startEarthquakeMonitor }            = require('./utils/earthquake');
+const { getVerifyPanelRoleId }               = require('./utils/verifyPanel');
 
 const { handleAdminCommand }      = require('./commands/admin');
 const { handleModerationCommand } = require('./commands/moderation');
 const { handleMessagingCommand }  = require('./commands/messaging');
 const { handleExportCommand }     = require('./commands/export');
 const { handleEarthquakeCommand } = require('./commands/earthquake');
-const { handleEntryMessageCommand } = require('./commands/entryMessage');
 
 const { handleButton, handleModal, handleSelectMenu } = require('./interactions/handlers');
 const { isCanvasAvailable } = require('./utils/map');
@@ -53,7 +55,13 @@ const client = new Client({
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-    ]
+        GatewayIntentBits.GuildMessageReactions,
+    ],
+    partials: [
+        Partials.Message,
+        Partials.Channel,
+        Partials.Reaction,
+    ],
 });
 
 // ─── スラッシュコマンド定義 ────────────────────────────────────
@@ -62,7 +70,8 @@ const commands = [
     new SlashCommandBuilder()
         .setName('verify')
         .setDescription('認証パネルを作成します')
-        .addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true))
+        .addRoleOption(o => o.setName('role').setDescription('付与するロール（1つのみの場合）'))
+        .addStringOption(o => o.setName('roles').setDescription('複数ロール指定（例: 😀:@Role1, 😆:@Role2）2つ以上で反応式パネルになります'))
         .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
         .addStringOption(o => o.setName('description').setDescription('パネルの説明文')),
 
@@ -119,10 +128,6 @@ const commands = [
     new SlashCommandBuilder()
         .setName('request')
         .setDescription('新規コマンドの作成依頼を送ります'),
-
-    new SlashCommandBuilder()
-        .setName('entry-message')
-        .setDescription('新規メンバー参加時にDM送信するメッセージを設定します'),
 
     new SlashCommandBuilder()
         .setName('help')
@@ -214,24 +219,6 @@ client.once(Events.ClientReady, async () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
-// ─── 新規メンバー参加イベント ───────────────────────────────────
-// /entry-message で設定されたメッセージを、そのままテキストとして新規メンバーのDMに送信する
-client.on(Events.GuildMemberAdd, async member => {
-    if (member.user.bot) return;
-
-    try {
-        const doc = await db.collection('entry_message_settings').doc(member.guild.id).get();
-        if (!doc.exists) return;
-
-        const message = doc.data()?.message;
-        if (!message) return;
-
-        await member.send(message);
-    } catch (e) {
-        console.error('[入室時DM送信エラー]', e);
-    }
-});
-
 // ─── Keep Alive (Render用) ─────────────────────────────────────
 const app = express();
 app.get('/', (req, res) => res.send('Bot is online!'));
@@ -279,7 +266,6 @@ client.on(Events.InteractionCreate, async interaction => {
         if (await handleExportCommand(interaction, db)) return;
         if (await handleEarthquakeCommand(interaction, client, db)) return;
         if (await handleMessagingCommand(interaction, db, broadcastRoleMap)) return;
-        if (await handleEntryMessageCommand(interaction, db)) return;
     }
 
     // 2. モーダル
@@ -298,6 +284,68 @@ client.on(Events.InteractionCreate, async interaction => {
     if (interaction.isStringSelectMenu()) {
         await handleSelectMenu(interaction);
         return;
+    }
+});
+
+// ─── 認証パネル（複数ロール・リアクション形式）────────────────
+/**
+ * リアクションからロールIDを解決する（絵文字が部分的にしか届いていない場合はfetchする）
+ */
+async function resolveVerifyRole(reaction, user) {
+    if (user.bot) return null;
+    try {
+        if (reaction.partial) await reaction.fetch();
+        if (reaction.message.partial) await reaction.message.fetch();
+    } catch {
+        return null;
+    }
+
+    const guild = reaction.message.guild;
+    if (!guild) return null;
+
+    const key = reaction.emoji.id ?? reaction.emoji.name;
+    const roleId = await getVerifyPanelRoleId(db, reaction.message.id, key);
+    if (!roleId) return null;
+
+    return { guild, roleId };
+}
+
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    const resolved = await resolveVerifyRole(reaction, user);
+    if (!resolved) return;
+    const { guild, roleId } = resolved;
+
+    try {
+        const member = await guild.members.fetch(user.id);
+        await member.roles.add(roleId);
+
+        sendLog(guild, new EmbedBuilder()
+            .setTitle('🔐 認証ログ（リアクション）')
+            .addFields(
+                { name: '使用者',     value: `${member}`,                                   inline: true },
+                { name: '使用コマンド', value: '認証パネル（リアクション）',                    inline: true },
+                { name: '日時',       value: `<t:${Math.floor(Date.now() / 1000)}:F>`,        inline: false },
+                { name: '取得ロール', value: `<@&${roleId}>`,                                  inline: false }
+            )
+            .setColor(0x2ECC71)
+            .setTimestamp(),
+            db
+        );
+    } catch (e) {
+        console.error('[認証パネル] ロール付与エラー:', e);
+    }
+});
+
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+    const resolved = await resolveVerifyRole(reaction, user);
+    if (!resolved) return;
+    const { guild, roleId } = resolved;
+
+    try {
+        const member = await guild.members.fetch(user.id);
+        await member.roles.remove(roleId);
+    } catch (e) {
+        console.error('[認証パネル] ロール剥奪エラー:', e);
     }
 });
 

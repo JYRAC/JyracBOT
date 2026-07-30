@@ -294,7 +294,7 @@ async function handleSelectMenu(interaction) {
 
     const value = interaction.values[0];
     const helpTexts = {
-        h_verify:    '**/verify**\nロール管理権限が必要です。ボタン付きの認証パネルを設置し、ユーザーが手軽にロールを獲得できるようにします。',
+        h_verify:    '**/verify**\nロール管理権限が必要です。認証パネルを設置します。\n・`role` のみ指定: ボタン形式（1ロール）\n・`roles` に2つ以上指定: リアクション形式（無制限ロール）\n　例: `😀:@Role1, 😆:@Role2`',
         h_ticket:    '**/ticket**\nチャンネル管理権限が必要です。ユーザー個別の問い合わせ用プライベートチャンネルを開設するパネルを設置します。',
         h_log:       '**/log**\n管理者権限が必要です。認証や一括削除のアクションが行われた際に送信されるログチャンネルの指定・解除を行います。',
         h_role:      '**/role-confirmation**\nモデレーター権限が必要です。対象のユーザーが現在持っている全ロールの一覧を表示します。',

@@ -9,6 +9,7 @@ const {
     PermissionsBitField,
 } = require('discord.js');
 const { sendCommandLog, sendLog, checkBotPermissionsOrReply } = require('../utils/permissions');
+const { parseRoleEmojiPairs, saveVerifyPanel } = require('../utils/verifyPanel');
 
 /**
  * モデレーション系コマンドを処理する
@@ -52,15 +53,78 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
     // ── /verify ───────────────────────────────────────────────
     // パネルはチャンネル全体に表示する（ephemeral不可）ため、
     // deferReply 済みの場合は followUp で公開送信し、自分への返信はその旨だけにする
+    //
+    // ・role のみ指定        → 従来通り、ボタン形式（1ロール）の認証パネル
+    // ・roles に2つ以上指定  → リアクション形式（無制限ロール）の認証パネル
+    //   roles の書式: "😀:@Role1, 😆:@Role2, <:custom:1234...>:@Role3"
     if (commandName === 'verify') {
         if (await checkBotPermissionsOrReply(interaction, [
             PermissionsBitField.Flags.ManageRoles,
             PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.AddReactions,
         ])) return true;
 
-        const role  = options.getRole('role');
-        const title = options.getString('title') ?? '認証パネル';
-        const desc  = options.getString('description') ?? '以下のボタンを押して認証を完了してください。';
+        const role       = options.getRole('role');
+        const rolesInput = options.getString('roles');
+        const title      = options.getString('title') ?? '認証パネル';
+
+        // ── 複数ロール（リアクション形式）────────────────────
+        if (rolesInput) {
+            const pairs = parseRoleEmojiPairs(rolesInput);
+
+            if (pairs.length < 2) {
+                await interaction.editReply({
+                    content:
+                        '❌ `roles` には2つ以上の「絵文字:ロール」のペアを指定してください。\n' +
+                        '例: `😀:@Role1, 😆:@Role2`\n' +
+                        '（1つだけ付与したい場合は `role` オプションを使用してください）'
+                });
+                return true;
+            }
+
+            const desc = options.getString('description') ?? '取得したいロールに対応する絵文字を押してください。';
+            const roleList = pairs.map(p => `${p.emoji} → <@&${p.roleId}>`).join('\n');
+
+            const embed = new EmbedBuilder()
+                .setTitle(title)
+                .setDescription(`${desc}\n\n${roleList}`)
+                .setColor(0x3498DB);
+
+            // 公開メッセージとしてチャンネルに送信
+            const sentMessage = await interaction.channel.send({ embeds: [embed] });
+
+            // 絵文字リアクションを順番に付与（レート制限回避のため少し間隔を空ける）
+            const mapping = {};
+            for (const pair of pairs) {
+                try {
+                    await sentMessage.react(pair.emoji);
+                    mapping[pair.key] = pair.roleId;
+                    await new Promise(r => setTimeout(r, 300));
+                } catch (e) {
+                    console.error('[verify] リアクション付与失敗:', pair.emoji, e);
+                }
+            }
+
+            if (Object.keys(mapping).length === 0) {
+                await sentMessage.delete().catch(() => {});
+                await interaction.editReply({ content: '❌ 絵文字の付与にすべて失敗したため、パネルの設置を中止しました。絵文字の指定が正しいか確認してください。' });
+                return true;
+            }
+
+            await saveVerifyPanel(db, sentMessage.id, interaction.guild.id, interaction.channel.id, mapping);
+
+            await interaction.editReply({ content: `✅ 複数ロール対応の認証パネル（リアクション形式・${Object.keys(mapping).length}ロール）を設置しました。` });
+            sendCommandLog(interaction, commandName, db);
+            return true;
+        }
+
+        // ── 単一ロール（ボタン形式）─────────────────────────
+        if (!role) {
+            await interaction.editReply({ content: '❌ `role`（1つのロール）または `roles`（2つ以上のロール）のいずれかを指定してください。' });
+            return true;
+        }
+
+        const desc = options.getString('description') ?? '以下のボタンを押して認証を完了してください。';
 
         const embed = new EmbedBuilder()
             .setTitle(title)
