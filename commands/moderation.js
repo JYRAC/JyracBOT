@@ -5,11 +5,21 @@ const {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
+    StringSelectMenuBuilder,
     MessageFlags,
     PermissionsBitField,
 } = require('discord.js');
 const { sendCommandLog, sendLog, checkBotPermissionsOrReply } = require('../utils/permissions');
-const { parseRoleEmojiPairs, saveVerifyPanel } = require('../utils/verifyPanel');
+const { saveVerifyPanel } = require('../utils/verifyPanel');
+const {
+    addTicketCategory,
+    removeTicketCategory,
+    listTicketCategories,
+} = require('../utils/ticketCategory');
+const { saveTicketPanel } = require('../utils/ticketPanel');
+
+/** /verifies で使用する固定の絵文字プリセット（最大15個・1番目から順にロールと同期する） */
+const VERIFIES_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟', '🇦', '🇧', '🇨', '🇩', '🇪'];
 
 /**
  * モデレーション系コマンドを処理する
@@ -51,80 +61,16 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
     }
 
     // ── /verify ───────────────────────────────────────────────
-    // パネルはチャンネル全体に表示する（ephemeral不可）ため、
-    // deferReply 済みの場合は followUp で公開送信し、自分への返信はその旨だけにする
-    //
-    // ・role のみ指定        → 従来通り、ボタン形式（1ロール）の認証パネル
-    // ・roles に2つ以上指定  → リアクション形式（無制限ロール）の認証パネル
-    //   roles の書式: "😀:@Role1, 😆:@Role2, <:custom:1234...>:@Role3"
+    // /ticket と同じ形式：パネル＋ボタンを設置し、ボタンを押したユーザーに指定ロールを付与する
     if (commandName === 'verify') {
         if (await checkBotPermissionsOrReply(interaction, [
             PermissionsBitField.Flags.ManageRoles,
             PermissionsBitField.Flags.SendMessages,
-            PermissionsBitField.Flags.AddReactions,
         ])) return true;
 
-        const role       = options.getRole('role');
-        const rolesInput = options.getString('roles');
-        const title      = options.getString('title') ?? '認証パネル';
-
-        // ── 複数ロール（リアクション形式）────────────────────
-        if (rolesInput) {
-            const pairs = parseRoleEmojiPairs(rolesInput);
-
-            if (pairs.length < 2) {
-                await interaction.editReply({
-                    content:
-                        '❌ `roles` には2つ以上の「絵文字:ロール」のペアを指定してください。\n' +
-                        '例: `😀:@Role1, 😆:@Role2`\n' +
-                        '（1つだけ付与したい場合は `role` オプションを使用してください）'
-                });
-                return true;
-            }
-
-            const desc = options.getString('description') ?? '取得したいロールに対応する絵文字を押してください。';
-            const roleList = pairs.map(p => `${p.emoji} → <@&${p.roleId}>`).join('\n');
-
-            const embed = new EmbedBuilder()
-                .setTitle(title)
-                .setDescription(`${desc}\n\n${roleList}`)
-                .setColor(0x3498DB);
-
-            // 公開メッセージとしてチャンネルに送信
-            const sentMessage = await interaction.channel.send({ embeds: [embed] });
-
-            // 絵文字リアクションを順番に付与（レート制限回避のため少し間隔を空ける）
-            const mapping = {};
-            for (const pair of pairs) {
-                try {
-                    await sentMessage.react(pair.emoji);
-                    mapping[pair.key] = pair.roleId;
-                    await new Promise(r => setTimeout(r, 300));
-                } catch (e) {
-                    console.error('[verify] リアクション付与失敗:', pair.emoji, e);
-                }
-            }
-
-            if (Object.keys(mapping).length === 0) {
-                await sentMessage.delete().catch(() => {});
-                await interaction.editReply({ content: '❌ 絵文字の付与にすべて失敗したため、パネルの設置を中止しました。絵文字の指定が正しいか確認してください。' });
-                return true;
-            }
-
-            await saveVerifyPanel(db, sentMessage.id, interaction.guild.id, interaction.channel.id, mapping);
-
-            await interaction.editReply({ content: `✅ 複数ロール対応の認証パネル（リアクション形式・${Object.keys(mapping).length}ロール）を設置しました。` });
-            sendCommandLog(interaction, commandName, db);
-            return true;
-        }
-
-        // ── 単一ロール（ボタン形式）─────────────────────────
-        if (!role) {
-            await interaction.editReply({ content: '❌ `role`（1つのロール）または `roles`（2つ以上のロール）のいずれかを指定してください。' });
-            return true;
-        }
-
-        const desc = options.getString('description') ?? '以下のボタンを押して認証を完了してください。';
+        const role  = options.getRole('role');
+        const title = options.getString('title') ?? '認証パネル';
+        const desc  = options.getString('description') ?? '以下のボタンを押して認証を完了してください。';
 
         const embed = new EmbedBuilder()
             .setTitle(title)
@@ -146,6 +92,64 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
         return true;
     }
 
+    // ── /verifies ─────────────────────────────────────────────
+    // 最大15個のリアクション式認証パネル。role-1〜role-15 の指定順に固定絵文字が同期し、
+    // パネル設置後にリアクションを押したメンバーへ対応するロールを自動付与する。
+    if (commandName === 'verifies') {
+        if (await checkBotPermissionsOrReply(interaction, [
+            PermissionsBitField.Flags.ManageRoles,
+            PermissionsBitField.Flags.SendMessages,
+            PermissionsBitField.Flags.AddReactions,
+        ])) return true;
+
+        const title = options.getString('title') ?? '認証パネル（複数ロール）';
+        const desc  = options.getString('description') ?? '取得したいロールに対応するリアクションを押してください。';
+
+        const pairs = [];
+        for (let i = 1; i <= VERIFIES_EMOJIS.length; i++) {
+            const role = options.getRole(`role-${i}`);
+            if (role) pairs.push({ emoji: VERIFIES_EMOJIS[i - 1], roleId: role.id });
+        }
+
+        if (pairs.length === 0) {
+            await interaction.editReply({ content: '❌ `role-1` 〜 `role-15` のいずれかに、少なくとも1つロールを指定してください。' });
+            return true;
+        }
+
+        const roleList = pairs.map(p => `${p.emoji} → <@&${p.roleId}>`).join('\n');
+        const embed = new EmbedBuilder()
+            .setTitle(title)
+            .setDescription(`${desc}\n\n${roleList}`)
+            .setColor(0x3498DB);
+
+        // 公開メッセージとしてチャンネルに送信
+        const sentMessage = await interaction.channel.send({ embeds: [embed] });
+
+        // 絵文字リアクションを順番に付与（レート制限回避のため少し間隔を空ける）
+        const mapping = {};
+        for (const pair of pairs) {
+            try {
+                await sentMessage.react(pair.emoji);
+                mapping[pair.emoji] = pair.roleId;
+                await new Promise(r => setTimeout(r, 300));
+            } catch (e) {
+                console.error('[verifies] リアクション付与失敗:', pair.emoji, e);
+            }
+        }
+
+        if (Object.keys(mapping).length === 0) {
+            await sentMessage.delete().catch(() => {});
+            await interaction.editReply({ content: '❌ リアクションの付与にすべて失敗したため、パネルの設置を中止しました。' });
+            return true;
+        }
+
+        await saveVerifyPanel(db, sentMessage.id, interaction.guild.id, interaction.channel.id, mapping);
+
+        await interaction.editReply({ content: `✅ 複数ロール対応の認証パネル（リアクション形式・${Object.keys(mapping).length}ロール）を設置しました。` });
+        sendCommandLog(interaction, commandName, db);
+        return true;
+    }
+
     // ── /delete ───────────────────────────────────────────────
     if (commandName === 'delete') {
         if (await checkBotPermissionsOrReply(interaction, [
@@ -163,35 +167,116 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
     }
 
     // ── /ticket ───────────────────────────────────────────────
-    // パネルはチャンネル全体に表示する（ephemeral不可）
+    // /ticket panel          … チケットパネルを設置する（カテゴリー未登録時は従来通り1ボタン形式）
+    // /ticket category-add   … チケット作成時に選ばせるカテゴリーを登録する
+    // /ticket category-remove/list … カテゴリーの削除・一覧
     if (commandName === 'ticket') {
-        if (await checkBotPermissionsOrReply(interaction, [
-            PermissionsBitField.Flags.ManageChannels,
-            PermissionsBitField.Flags.SendMessages,
-        ])) return true;
+        const sub = options.getSubcommand();
 
-        const adminRole = options.getRole('admin-role');
-        const key = `t_${Date.now()}`;
-        ticketMessages.set(key, options.getString('panel-desc') ?? null);
+        // ── /ticket category-add ────────────────────────────
+        if (sub === 'category-add') {
+            const name       = options.getString('name');
+            const emoji      = options.getString('emoji');
+            const adminRole  = options.getRole('admin-role');
+            const parent     = options.getChannel('parent');
+            const panelDesc  = options.getString('panel-desc');
 
-        const embed = new EmbedBuilder()
-            .setTitle(options.getString('title') ?? 'サポートチケット')
-            .setDescription(options.getString('description') ?? 'チケットを作成するには下のボタンを押してください。')
-            .setColor(0x9B59B6);
+            await addTicketCategory(db, interaction.guild.id, {
+                name,
+                emoji,
+                adminRoleId: adminRole?.id ?? null,
+                parentId: parent?.id ?? null,
+                panelDesc: panelDesc ?? null,
+            });
 
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`tkt_${adminRole.id}_${key}`)
-                .setLabel('🎫 チケットを作成')
-                .setStyle(ButtonStyle.Primary)
-        );
+            await interaction.editReply({ content: `✅ チケットカテゴリー **${emoji} ${name}** を登録しました。` });
+            sendCommandLog(interaction, commandName, db);
+            return true;
+        }
 
-        // 公開メッセージとしてチャンネルに送信
-        await interaction.channel.send({ embeds: [embed], components: [row] });
-        // コマンド実行者への確認（ephemeral）
-        await interaction.editReply({ content: '✅ チケットパネルを設置しました。' });
-        sendCommandLog(interaction, commandName, db);
-        return true;
+        // ── /ticket category-remove ─────────────────────────
+        if (sub === 'category-remove') {
+            const name = options.getString('name');
+            const removed = await removeTicketCategory(db, interaction.guild.id, name);
+            await interaction.editReply({
+                content: removed
+                    ? `🗑️ チケットカテゴリー **${name}** を削除しました。`
+                    : `❌ カテゴリー **${name}** が見つかりませんでした。`
+            });
+            return true;
+        }
+
+        // ── /ticket category-list ───────────────────────────
+        if (sub === 'category-list') {
+            const categories = await listTicketCategories(db, interaction.guild.id);
+            if (categories.length === 0) {
+                await interaction.editReply({ content: '📋 登録されているチケットカテゴリーはありません。' });
+                return true;
+            }
+            const lines = categories.map(c =>
+                `・${c.emoji} **${c.name}**${c.adminRoleId ? ` (対応ロール: <@&${c.adminRoleId}>)` : ''}${c.parentId ? ` (作成先: <#${c.parentId}>)` : ''}`
+            );
+            const embed = new EmbedBuilder()
+                .setTitle('📋 チケットカテゴリー一覧')
+                .setDescription(lines.join('\n'))
+                .setColor(0x9B59B6);
+            await interaction.editReply({ embeds: [embed] });
+            return true;
+        }
+
+        // ── /ticket panel ────────────────────────────────────
+        if (sub === 'panel') {
+            if (await checkBotPermissionsOrReply(interaction, [
+                PermissionsBitField.Flags.ManageChannels,
+                PermissionsBitField.Flags.SendMessages,
+            ])) return true;
+
+            const adminRole = options.getRole('admin-role');
+            const key = `t_${Date.now()}`;
+            await saveTicketPanel(db, key, {
+                guildId: interaction.guild.id,
+                adminRoleId: adminRole.id,
+                panelDesc: options.getString('panel-desc') ?? null,
+            });
+            ticketMessages.set(key, options.getString('panel-desc') ?? null); // フォールバック（メモリキャッシュ）
+
+            const embed = new EmbedBuilder()
+                .setTitle(options.getString('title') ?? 'サポートチケット')
+                .setDescription(options.getString('description') ?? 'チケットを作成するには下のボタンを押してください。')
+                .setColor(0x9B59B6);
+
+            const categories = await listTicketCategories(db, interaction.guild.id);
+
+            let components;
+            if (categories.length > 0) {
+                // カテゴリーが登録されている場合はセレクトメニューで選ばせる
+                const select = new StringSelectMenuBuilder()
+                    .setCustomId(`tkt_cat_${adminRole.id}_${key}`)
+                    .setPlaceholder('チケットのカテゴリーを選択してください')
+                    .addOptions(categories.slice(0, 25).map(c => ({
+                        label: c.name,
+                        value: c.name,
+                        emoji: c.emoji,
+                    })));
+                components = [new ActionRowBuilder().addComponents(select)];
+            } else {
+                components = [new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`tkt_${adminRole.id}_${key}`)
+                        .setLabel('🎫 チケットを作成')
+                        .setStyle(ButtonStyle.Primary)
+                )];
+            }
+
+            // 公開メッセージとしてチャンネルに送信
+            await interaction.channel.send({ embeds: [embed], components });
+            // コマンド実行者への確認（ephemeral）
+            await interaction.editReply({ content: '✅ チケットパネルを設置しました。' });
+            sendCommandLog(interaction, commandName, db);
+            return true;
+        }
+
+        return false;
     }
 
     // ── /give-role / /remove-role ─────────────────────────────

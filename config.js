@@ -6,7 +6,7 @@
 const PUBLIC_COMMANDS = ['receive-notifications', 'request', 'help'];
 
 /** モーダルを表示するコマンド（deferReply不可） */
-const MODAL_COMMANDS = ['notice', 'broadcast', 'request'];
+const MODAL_COMMANDS = ['notice', 'broadcast', 'request', 'entry-message', 'adjustment'];
 
 /** オーナー専用コマンド（grant-access / revoke-access / list-access） */
 const OWNER_COMMANDS = ['grant-access', 'revoke-access', 'list-access'];

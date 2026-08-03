@@ -29,6 +29,9 @@ const { handleModerationCommand } = require('./commands/moderation');
 const { handleMessagingCommand }  = require('./commands/messaging');
 const { handleExportCommand }     = require('./commands/export');
 const { handleEarthquakeCommand } = require('./commands/earthquake');
+const { handleEntryMessageCommand, handleGuildMemberAdd } = require('./commands/entryMessage');
+const { handleChangeNameCommand } = require('./commands/changeName');
+const { handleAdjustmentCommand } = require('./commands/adjustment');
 
 const { handleButton, handleModal, handleSelectMenu } = require('./interactions/handlers');
 const { isCanvasAvailable } = require('./utils/map');
@@ -69,19 +72,61 @@ const client = new Client({
 const commands = [
     new SlashCommandBuilder()
         .setName('verify')
-        .setDescription('認証パネルを作成します')
-        .addRoleOption(o => o.setName('role').setDescription('付与するロール（1つのみの場合）'))
-        .addStringOption(o => o.setName('roles').setDescription('複数ロール指定（例: 😀:@Role1, 😆:@Role2）2つ以上で反応式パネルになります'))
+        .setDescription('認証パネル（パネル＋ボタン形式）を作成します')
+        .addRoleOption(o => o.setName('role').setDescription('付与するロール').setRequired(true))
+        .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
+        .addStringOption(o => o.setName('description').setDescription('パネルの説明文')),
+
+    new SlashCommandBuilder()
+        .setName('verifies')
+        .setDescription('最大15ロール対応のリアクション式認証パネルを作成します（role-1が1番目の絵文字と同期）')
+        .addRoleOption(o => o.setName('role-1').setDescription('1番目のリアクションに対応するロール').setRequired(true))
+        .addRoleOption(o => o.setName('role-2').setDescription('2番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-3').setDescription('3番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-4').setDescription('4番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-5').setDescription('5番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-6').setDescription('6番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-7').setDescription('7番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-8').setDescription('8番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-9').setDescription('9番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-10').setDescription('10番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-11').setDescription('11番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-12').setDescription('12番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-13').setDescription('13番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-14').setDescription('14番目のリアクションに対応するロール'))
+        .addRoleOption(o => o.setName('role-15').setDescription('15番目のリアクションに対応するロール'))
         .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
         .addStringOption(o => o.setName('description').setDescription('パネルの説明文')),
 
     new SlashCommandBuilder()
         .setName('ticket')
-        .setDescription('チケットパネルを作成します')
-        .addRoleOption(o => o.setName('admin-role').setDescription('対応を行う管理ロール').setRequired(true))
-        .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
-        .addStringOption(o => o.setName('description').setDescription('パネルの説明文'))
-        .addStringOption(o => o.setName('panel-desc').setDescription('チケット作成時に送信されるメッセージ')),
+        .setDescription('チケット機能（パネル設置・カテゴリー管理）')
+        .addSubcommand(sub => sub
+            .setName('panel')
+            .setDescription('チケットパネルを設置します')
+            .addRoleOption(o => o.setName('admin-role').setDescription('対応を行う管理ロール（既定値）').setRequired(true))
+            .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
+            .addStringOption(o => o.setName('description').setDescription('パネルの説明文'))
+            .addStringOption(o => o.setName('panel-desc').setDescription('チケット作成時に送信されるメッセージ（既定値）'))
+        )
+        .addSubcommand(sub => sub
+            .setName('category-add')
+            .setDescription('チケット作成時に選択できるカテゴリーを登録します')
+            .addStringOption(o => o.setName('name').setDescription('カテゴリー名').setRequired(true))
+            .addStringOption(o => o.setName('emoji').setDescription('カテゴリーに表示する絵文字').setRequired(true))
+            .addRoleOption(o => o.setName('admin-role').setDescription('このカテゴリー専用の対応ロール（省略時はパネルの既定ロール）'))
+            .addChannelOption(o => o.setName('parent').setDescription('チケットチャンネルの作成先カテゴリー').addChannelTypes(ChannelType.GuildCategory))
+            .addStringOption(o => o.setName('panel-desc').setDescription('このカテゴリー専用のチケット内メッセージ（省略時はパネルの既定値）'))
+        )
+        .addSubcommand(sub => sub
+            .setName('category-remove')
+            .setDescription('登録済みのチケットカテゴリーを削除します')
+            .addStringOption(o => o.setName('name').setDescription('削除するカテゴリー名').setRequired(true))
+        )
+        .addSubcommand(sub => sub
+            .setName('category-list')
+            .setDescription('登録済みのチケットカテゴリー一覧を表示します')
+        ),
 
     new SlashCommandBuilder()
         .setName('delete')
@@ -109,6 +154,21 @@ const commands = [
         .setName('role-confirmation')
         .setDescription('指定ユーザーが所持しているロールの一覧を確認します')
         .addUserOption(o => o.setName('target').setDescription('確認対象のユーザー').setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('entry-message')
+        .setDescription('新規メンバー参加時に送信するDMメッセージを設定します'),
+
+    new SlashCommandBuilder()
+        .setName('change-name')
+        .setDescription('名前変更パネルを作成します（ボタンを押すとモーダルで自分のニックネームを変更できます）')
+        .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
+        .addStringOption(o => o.setName('description').setDescription('パネルの説明文'))
+        .addStringOption(o => o.setName('modal-title').setDescription('ボタンを押した際に表示するモーダルのタイトル')),
+
+    new SlashCommandBuilder()
+        .setName('adjustment')
+        .setDescription('日程調整パネル（調整さん風）を作成します'),
 
     new SlashCommandBuilder()
         .setName('receive-notifications')
@@ -243,6 +303,9 @@ client.on(Events.InteractionCreate, async interaction => {
             if (await handleExportCommand(interaction, db)) return;
             if (await handleEarthquakeCommand(interaction, client, db)) return;
             if (await handleMessagingCommand(interaction, db, broadcastRoleMap)) return;
+            if (await handleEntryMessageCommand(interaction, db)) return;
+            if (await handleChangeNameCommand(interaction, db)) return;
+            if (await handleAdjustmentCommand(interaction)) return;
             return;
         }
 
@@ -266,6 +329,9 @@ client.on(Events.InteractionCreate, async interaction => {
         if (await handleExportCommand(interaction, db)) return;
         if (await handleEarthquakeCommand(interaction, client, db)) return;
         if (await handleMessagingCommand(interaction, db, broadcastRoleMap)) return;
+        if (await handleEntryMessageCommand(interaction, db)) return;
+        if (await handleChangeNameCommand(interaction, db)) return;
+        if (await handleAdjustmentCommand(interaction)) return;
     }
 
     // 2. モーダル
@@ -282,9 +348,15 @@ client.on(Events.InteractionCreate, async interaction => {
 
     // 4. セレクトメニュー
     if (interaction.isStringSelectMenu()) {
-        await handleSelectMenu(interaction);
+        await handleSelectMenu(interaction, db);
         return;
     }
+});
+
+// ─── 入室時DMメッセージ送信 ─────────────────────────────────────
+// /entry-message で設定された内容を、新規メンバー参加時にDMで送信する
+client.on(Events.GuildMemberAdd, async member => {
+    await handleGuildMemberAdd(member, db);
 });
 
 // ─── 認証パネル（複数ロール・リアクション形式）────────────────

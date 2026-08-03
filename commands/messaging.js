@@ -129,8 +129,12 @@ async function handleMessagingCommand(interaction, db, broadcastRoleMap) {
             .setCustomId('help_select')
             .setPlaceholder('詳細を見たいコマンドを選択')
             .addOptions([
-                { label: '/verify (認証)',                     value: 'h_verify' },
+                { label: '/verify (認証・単一ロール)',         value: 'h_verify' },
+                { label: '/verifies (認証・最大15ロール)',     value: 'h_verifies' },
                 { label: '/ticket (サポート)',                 value: 'h_ticket' },
+                { label: '/change-name (名前変更パネル)',      value: 'h_changename' },
+                { label: '/adjustment (日程調整)',             value: 'h_adjustment' },
+                { label: '/entry-message (入室時DM)',          value: 'h_entrymessage' },
                 { label: '/log (管理ログ)',                    value: 'h_log' },
                 { label: '/role-confirmation (確認)',          value: 'h_role' },
                 { label: '/export (チャンネルエクスポート)',   value: 'h_export' },

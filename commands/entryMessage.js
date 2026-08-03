@@ -63,4 +63,27 @@ async function handleEntryMessageModal(interaction, db) {
     return true;
 }
 
-module.exports = { handleEntryMessageCommand, handleEntryMessageModal };
+/**
+ * GuildMemberAdd イベントを処理する
+ * サーバーに設定されている入室時DMメッセージを、参加した新規メンバーへ送信する
+ * @param {import('discord.js').GuildMember} member
+ * @param {import('firebase-admin').firestore.Firestore} db
+ */
+async function handleGuildMemberAdd(member, db) {
+    if (member.user.bot) return;
+
+    try {
+        const doc = await db.collection('entry_message_settings').doc(member.guild.id).get();
+        if (!doc.exists) return;
+
+        const { message } = doc.data();
+        if (!message) return;
+
+        await member.send(message);
+    } catch (e) {
+        // DMを閉じているユーザーなど、送信できない場合はエラーを無視する
+        console.error('[entry-message] DM送信エラー:', e);
+    }
+}
+
+module.exports = { handleEntryMessageCommand, handleEntryMessageModal, handleGuildMemberAdd };
