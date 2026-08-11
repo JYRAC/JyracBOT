@@ -23,7 +23,7 @@ const VERIFIES_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', 
 
 /**
  * モデレーション系コマンドを処理する
- * /log /verify /delete /ticket /give-role /remove-role /role-confirmation
+ * /log /verify /unverify /delete /ticket /give-role /remove-role /role-confirmation
  * @param {import('discord.js').ChatInputCommandInteraction} interaction
  * @param {import('firebase-admin').firestore.Firestore} db
  * @param {Map<string, string|null>} ticketMessages
@@ -92,6 +92,39 @@ async function handleModerationCommand(interaction, db, ticketMessages) {
         return true;
     }
 
+    // ── /unverify ─────────────────────────────────────────────
+    // パネルはチャンネル全体に表示する（ephemeral不可）ため、
+    // deferReply 済みの場合は followUp で公開送信し、自分への返信はその旨だけにする
+    if (commandName === 'unverify') {
+        if (await checkBotPermissionsOrReply(interaction, [
+            PermissionsBitField.Flags.ManageRoles,
+            PermissionsBitField.Flags.SendMessages,
+        ])) return true;
+
+        const role  = options.getRole('role');
+        const title = options.getString('title') ?? 'ロール解除パネル';
+        const desc  = options.getString('description') ?? '以下のボタンを押すとロールが解除されます。';
+
+        const embed = new EmbedBuilder()
+            .setTitle(title)
+            .setDescription(desc)
+            .setColor(0xE74C3C);
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`uv_role_${role.id}`)
+                .setLabel('🚫 解除')
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        // 公開メッセージとしてチャンネルに送信
+        await interaction.channel.send({ embeds: [embed], components: [row] });
+        // コマンド実行者への確認（ephemeral）
+        await interaction.editReply({ content: '✅ ロール解除パネルを設置しました。' });
+        sendCommandLog(interaction, commandName, db);
+        return true;
+    }
+  
     // ── /verifies ─────────────────────────────────────────────
     // 最大15個のリアクション式認証パネル。role-1〜role-15 の指定順に固定絵文字が同期し、
     // パネル設置後にリアクションを押したメンバーへ対応するロールを自動付与する。

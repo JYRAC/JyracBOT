@@ -78,6 +78,16 @@ const commands = [
         .addStringOption(o => o.setName('description').setDescription('パネルの説明文')),
 
     new SlashCommandBuilder()
+        .setName('unverify')
+        .setDescription('ロール解除パネルを作成します')
+        .addRoleOption(o => o.setName('role').setDescription('剥奪するロール').setRequired(true))
+        .addStringOption(o => o.setName('title').setDescription('パネルのタイトル'))
+        .addStringOption(o => o.setName('description').setDescription('パネルの説明文')),
+
+    new SlashCommandBuilder()
+        .setName('ticket')
+        .setDescription('チケットパネルを作成します')
+        .addRoleOption(o => o.setName('admin-role').setDescription('対応を行う管理ロール').setRequired(true))
         .setName('verifies')
         .setDescription('最大15ロール対応のリアクション式認証パネルを作成します（role-1が1番目の絵文字と同期）')
         .addRoleOption(o => o.setName('role-1').setDescription('1番目のリアクションに対応するロール').setRequired(true))
