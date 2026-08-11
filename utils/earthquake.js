@@ -96,21 +96,40 @@ function buildJMAQuakeEmbed(detail, title) {
         });
     }
 
+    // 各地の震度を Area（地方）単位で細かく表示する
+    // 構造: Pref > Area > City。Area.MaxInt を使い「〇〇県〇〇部」単位で表示する
     const prefs = detail.Intensity?.Observation?.Pref ?? [];
     const SHOW_THRESHOLD = ['3', '4', '5-', '5+', '6-', '6+', '7'];
-    const prefLines = prefs
-        .filter(p => SHOW_THRESHOLD.includes(p.MaxInt))
-        .sort((a, b) => {
-            const order = ['7', '6+', '6-', '5+', '5-', '4', '3'];
-            return order.indexOf(a.MaxInt) - order.indexOf(b.MaxInt);
-        })
-        .map(p => `${formatIntensity(p.MaxInt)}: ${p.Name}`)
-        .join('\n');
+    const INT_ORDER_DESC = ['7', '6+', '6-', '5+', '5-', '4', '3', '2', '1'];
 
-    if (prefLines) {
+    // Area（地方）ごとに最大震度と名称を収集
+    const areaRows = [];
+    for (const pref of prefs) {
+        for (const area of pref.Area ?? []) {
+            if (!SHOW_THRESHOLD.includes(area.MaxInt)) continue;
+            areaRows.push({
+                int:  area.MaxInt,
+                name: `${pref.Name} ${area.Name}`,  // 例: 宮城県 北部
+            });
+        }
+    }
+    areaRows.sort((a, b) => INT_ORDER_DESC.indexOf(a.int) - INT_ORDER_DESC.indexOf(b.int));
+
+    if (areaRows.length > 0) {
+        // 震度ごとにグルーピングして表示（例: 震度5弱: 宮城県 北部 / 福島県 北部）
+        const grouped = new Map();
+        for (const row of areaRows) {
+            const label = `震度${formatIntensity(row.int)}`;
+            if (!grouped.has(label)) grouped.set(label, []);
+            grouped.get(label).push(row.name);
+        }
+        const areaText = [...grouped.entries()]
+            .map(([label, names]) => `**${label}**\n${names.join('  /  ')}`)
+            .join('\n');
+
         embed.addFields({
             name: '各地の震度（震度3以上）',
-            value: prefLines.slice(0, 1024),
+            value: areaText.slice(0, 1024),
             inline: false
         });
     }
@@ -147,6 +166,20 @@ function extractStationsFromJMA(detail) {
 // ─── 地震情報ポーリング ────────────────────────────────────────
 
 /**
+ * EEW（緊急地震速報）の予測震度スケール値（数値）を日本語テキストに変換する
+ * P2P地震情報 API は整数部のみ有効な小数で返すため Math.floor で丸める
+ */
+function eewScaleToText(scale) {
+    const n = Math.floor(scale);
+    const map = {
+        '-1': '不明', 0: '震度0', 10: '震度1', 20: '震度2', 30: '震度3',
+        40: '震度4', 45: '震度5弱', 50: '震度5強',
+        55: '震度6弱', 60: '震度6強', 70: '震度7', 99: '震度7程度以上',
+    };
+    return map[n] ?? `震度不明(${n})`;
+}
+
+/**
  * 気象庁地震情報の HTTPポーリングを開始する（30秒間隔）
  * @param {import('discord.js').Client} client
  * @param {import('firebase-admin').firestore.Firestore} db
@@ -154,10 +187,52 @@ function extractStationsFromJMA(detail) {
 function startEarthquakeMonitor(client, db) {
     const LIST_URL    = 'https://www.jma.go.jp/bosai/quake/data/list.json';
     const DETAIL_BASE = 'https://www.jma.go.jp/bosai/quake/data/';
+    const EEW_URL     = 'https://api.p2pquake.net/v2/history?codes=556&limit=10';
     const POLL_INTERVAL = 30_000;
 
     const startedAt = Date.now();
     const seenIds = new Set();
+
+    // ── 既送信イベントの永続化（再起動をまたいで重複送信を防ぐ）────
+    // Bot が再起動しても、気象庁側で report の更新時刻（rdt）が
+    // 更新され続ける限り「起動前より新しい」と判定されてしまい、
+    // 過去に送信済みの地震情報が再送されることがあった。
+    // これを防ぐため、送信済みキーを Firestore に永続化し、
+    // 起動時に読み込んでおく。
+    const SEEN_COLLECTION = 'earthquake_sent_events';
+    const SEEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7日間保持
+
+    async function loadSeenIds() {
+        try {
+            const cutoff = Date.now() - SEEN_TTL_MS;
+            const snap = await db.collection(SEEN_COLLECTION).get();
+            const staleDocs = [];
+            snap.forEach(doc => {
+                const data = doc.data();
+                if ((data.sentAt ?? 0) < cutoff) {
+                    staleDocs.push(doc.ref);
+                } else {
+                    seenIds.add(doc.id);
+                }
+            });
+            // 古い記録は掃除しておく（コレクションの肥大化防止）
+            for (const ref of staleDocs) {
+                await ref.delete().catch(() => {});
+            }
+            console.log(`[地震監視] 送信済みイベント ${seenIds.size} 件を読み込みました`);
+        } catch (e) {
+            console.error('[地震監視] 送信済みイベントの読み込みに失敗しました:', e.message);
+        }
+    }
+
+    async function markSeen(key) {
+        seenIds.add(key);
+        try {
+            await db.collection(SEEN_COLLECTION).doc(key).set({ sentAt: Date.now() });
+        } catch (e) {
+            console.error('[地震監視] 送信済みイベントの保存に失敗しました:', e.message);
+        }
+    }
 
     async function getNotifyChannels() {
         const snap = await db.collection('earthquake_settings').get();
@@ -173,6 +248,98 @@ function startEarthquakeMonitor(client, db) {
         }
     }
 
+    // ── EEW（緊急地震速報）ポーリング ──────────────────────────
+    async function pollEEW() {
+        try {
+            const res = await fetch(EEW_URL, {
+                headers: { 'User-Agent': 'JYRACDiscordBot/1.0' }
+            });
+            if (!res.ok) return;
+            const list = await res.json();
+
+            for (const item of list) {
+                // 受信日時が Bot 起動前ならスキップ
+                const itemTime = item.time ? new Date(item.time.replace(/\//g, '-')).getTime() : 0;
+                if (itemTime < startedAt) continue;
+
+                // 重複チェック: eventId + serial（報数）で一意に識別
+                const eventId = item.issue?.eventId ?? '';
+                const serial  = item.issue?.serial  ?? '0';
+                const eewKey  = `eew_${eventId}_${serial}`;
+                if (seenIds.has(eewKey)) continue;
+                await markSeen(eewKey);
+
+                // テスト報は無視
+                if (item.test) continue;
+                // 取消の場合は取消通知を出す
+                if (item.cancelled) {
+                    const cancelEmbed = new EmbedBuilder()
+                        .setTitle('🚫 緊急地震速報 取消')
+                        .setColor(0x808080)
+                        .setDescription('先ほどの緊急地震速報は取り消されました。')
+                        .setTimestamp()
+                        .setFooter({ text: '気象庁 緊急地震速報' });
+                    await sendToChannels({ embeds: [cancelEmbed] });
+                    continue;
+                }
+
+                const eq       = item.earthquake ?? {};
+                const hypo     = eq.hypocenter   ?? {};
+                const areas    = item.areas       ?? [];
+                const serialNo = parseInt(serial, 10);
+
+                // 警報対象地域（kindCode 10/11/19 のどれでも対象地域として表示）
+                const warningAreas = areas.filter(a => a.kindCode != null);
+                // 警報対象地域を都道府県（pref）でグルーピングして表示
+                const prefMap = new Map();
+                for (const a of warningAreas) {
+                    const pref = a.pref ?? '不明';
+                    if (!prefMap.has(pref)) prefMap.set(pref, []);
+                    prefMap.get(pref).push(a.name);
+                }
+                const areaText = prefMap.size > 0
+                    ? [...prefMap.entries()].map(([pref, names]) => `${pref}: ${names.join('・')}`).join('\n')
+                    : '情報なし';
+
+                // 全 area の最大予測震度（scaleFrom の最大値）
+                const maxScale = areas.reduce((max, a) => Math.max(max, a.scaleFrom ?? -1), -1);
+                const maxScaleText = maxScale >= 0 ? eewScaleToText(maxScale) : '不明';
+                const color = maxScale >= 0 ? intensityToColor(
+                    {10:'1',20:'2',30:'3',40:'4',45:'5-',50:'5+',55:'6-',60:'6+',70:'7',99:'7'}[maxScale] ?? '1'
+                ) : 0xff0000;
+
+                const issueTs = item.issue?.time
+                    ? Math.floor(new Date(item.issue.time.replace(/\//g, '-')).getTime() / 1000)
+                    : null;
+                const issueTsStr = issueTs ? `<t:${issueTs}:F>` : '不明';
+
+                const depthStr = hypo.depth != null && hypo.depth >= 0
+                    ? (hypo.depth === 0 ? 'ごく浅い' : `${Math.floor(hypo.depth)} km`)
+                    : '不明';
+
+                const embed = new EmbedBuilder()
+                    .setTitle(`🚨 緊急地震速報（警報）第${serialNo}報`)
+                    .setColor(color)
+                    .addFields(
+                        { name: '震央',         value: hypo.name    ?? '不明',           inline: true },
+                        { name: '深さ',         value: depthStr,                         inline: true },
+                        { name: 'マグニチュード', value: hypo.magnitude != null && hypo.magnitude >= 0 ? `M${hypo.magnitude}` : '不明', inline: true },
+                        { name: '最大予測震度', value: maxScaleText,                      inline: true },
+                        { name: '発表時刻',     value: issueTsStr,                       inline: false },
+                        { name: '警報対象の地域', value: areaText.slice(0, 1024),         inline: false },
+                    )
+                    .setTimestamp()
+                    .setFooter({ text: '気象庁 緊急地震速報' });
+
+                await sendToChannels({ embeds: [embed] });
+                console.log(`[EEW] 第${serialNo}報 ${hypo.name ?? '不明'} M${hypo.magnitude} 最大予測震度${maxScaleText}`);
+            }
+        } catch (err) {
+            console.error('[EEW監視] ポーリングエラー:', err.message);
+        }
+    }
+
+    // ── 地震情報（確定）ポーリング ─────────────────────────────
     async function poll() {
         try {
             const res = await fetch(LIST_URL, {
@@ -190,7 +357,7 @@ function startEarthquakeMonitor(client, db) {
                 const uniqueKey = `${eid}_${ttl}`;
 
                 if (seenIds.has(uniqueKey)) continue;
-                seenIds.add(uniqueKey);
+                await markSeen(uniqueKey);
 
                 // ── 震源・震度情報（確定報）────────────────────────
                 if (ttl === '震源・震度情報' && item.json) {
@@ -209,7 +376,7 @@ function startEarthquakeMonitor(client, db) {
 
                         if (coord) {
                             const buf = await buildJMAMapAttachment(coord.lat, coord.lon, stations)
-                                .catch(e => { console.error('[地図生成エラー]', e.message); return null; });
+                                .catch(e => { console.error('[地図生成エラー]', e.stack || e.message || e); return null; });
                             if (buf) {
                                 const attachment = new AttachmentBuilder(buf, { name: 'map.png' });
                                 embed.setImage('attachment://map.png');
@@ -236,13 +403,6 @@ function startEarthquakeMonitor(client, db) {
                     const arrivalTs = item.at ? Math.floor(new Date(item.at).getTime() / 1000) : null;
                     const arrivalStr = arrivalTs ? `<t:${arrivalTs}:F>` : '不明';
 
-                    const INT_ORDER = ['1', '2', '3', '4', '5-', '5+', '6-', '6+', '7'];
-                    const prefLines = (item.int ?? [])
-                        .filter(p => ['3', '4', '5-', '5+', '6-', '6+', '7'].includes(p.maxi))
-                        .sort((a, b) => INT_ORDER.indexOf(b.maxi) - INT_ORDER.indexOf(a.maxi))
-                        .map(p => `震度${formatIntensity(p.maxi)}: ${prefNameFromCode(p.code)}`)
-                        .join('\n');
-
                     const embed = new EmbedBuilder()
                         .setTitle('⚡ 震度速報')
                         .setColor(color)
@@ -254,8 +414,66 @@ function startEarthquakeMonitor(client, db) {
                         .setTimestamp()
                         .setFooter({ text: '気象庁 震度速報' });
 
-                    if (prefLines) {
-                        embed.addFields({ name: '観測地域', value: prefLines.slice(0, 1024), inline: false });
+                    // 詳細JSONがある場合は Area（地方）単位の細かい震度情報を取得して表示する
+                    if (item.json) {
+                        try {
+                            const detailRes = await fetch(`${DETAIL_BASE}${item.json}`, {
+                                headers: { 'User-Agent': 'JYRACDiscordBot/1.0' }
+                            });
+                            if (detailRes.ok) {
+                                const detail = await detailRes.json();
+                                const prefs = detail.Body?.Intensity?.Observation?.Pref ?? [];
+                                const SHOW_TH = ['3', '4', '5-', '5+', '6-', '6+', '7'];
+                                const INT_ORD = ['7', '6+', '6-', '5+', '5-', '4', '3'];
+
+                                const areaRows = [];
+                                for (const pref of prefs) {
+                                    for (const area of pref.Area ?? []) {
+                                        if (!SHOW_TH.includes(area.MaxInt)) continue;
+                                        areaRows.push({
+                                            int:  area.MaxInt,
+                                            name: `${pref.Name} ${area.Name}`,
+                                        });
+                                    }
+                                }
+                                areaRows.sort((a, b) => INT_ORD.indexOf(a.int) - INT_ORD.indexOf(b.int));
+
+                                if (areaRows.length > 0) {
+                                    const grouped = new Map();
+                                    for (const row of areaRows) {
+                                        const label = `震度${formatIntensity(row.int)}`;
+                                        if (!grouped.has(label)) grouped.set(label, []);
+                                        grouped.get(label).push(row.name);
+                                    }
+                                    const areaText = [...grouped.entries()]
+                                        .map(([label, names]) => `**${label}**\n${names.join('  /  ')}`)
+                                        .join('\n');
+                                    embed.addFields({ name: '観測地域（震度3以上）', value: areaText.slice(0, 1024), inline: false });
+                                }
+                            }
+                        } catch (e) {
+                            // 詳細取得失敗時はフォールバック: 都道府県レベルで表示
+                            const INT_ORDER_FB = ['1', '2', '3', '4', '5-', '5+', '6-', '6+', '7'];
+                            const prefLines = (item.int ?? [])
+                                .filter(p => threshold.includes(p.maxi))
+                                .sort((a, b) => INT_ORDER_FB.indexOf(b.maxi) - INT_ORDER_FB.indexOf(a.maxi))
+                                .map(p => `震度${formatIntensity(p.maxi)}: ${prefNameFromCode(p.code)}`)
+                                .join('\n');
+                            if (prefLines) {
+                                embed.addFields({ name: '観測地域', value: prefLines.slice(0, 1024), inline: false });
+                            }
+                        }
+                    } else {
+                        // 詳細JSONなし: 都道府県レベルのフォールバック
+                        const INT_ORDER_FB = ['1', '2', '3', '4', '5-', '5+', '6-', '6+', '7'];
+                        const prefLines = (item.int ?? [])
+                            .filter(p => threshold.includes(p.maxi))
+                            .sort((a, b) => INT_ORDER_FB.indexOf(b.maxi) - INT_ORDER_FB.indexOf(a.maxi))
+                            .map(p => `震度${formatIntensity(p.maxi)}: ${prefNameFromCode(p.code)}`)
+                            .join('\n');
+                        if (prefLines) {
+                            embed.addFields({ name: '観測地域', value: prefLines.slice(0, 1024), inline: false });
+                        }
                     }
 
                     await sendToChannels({ embeds: [embed] });
@@ -296,7 +514,8 @@ function startEarthquakeMonitor(client, db) {
 
                         const payload = { embeds: [embed] };
                         if (coord) {
-                            const buf = await buildJMAMapAttachment(coord.lat, coord.lon, []).catch(() => null);
+                            const buf = await buildJMAMapAttachment(coord.lat, coord.lon, [])
+                                .catch(e => { console.error('[地図生成エラー]', e.stack || e.message || e); return null; });
                             if (buf) {
                                 const attachment = new AttachmentBuilder(buf, { name: 'map.png' });
                                 embed.setImage('attachment://map.png');
@@ -316,15 +535,22 @@ function startEarthquakeMonitor(client, db) {
         }
     }
 
-    console.log('[地震監視] 気象庁API HTTPポーリング開始 (30秒間隔)');
-    poll();
-    setInterval(poll, POLL_INTERVAL);
+    (async () => {
+        await loadSeenIds();
+        console.log('[地震監視] 気象庁API HTTPポーリング開始 (30秒間隔)');
+        console.log('[EEW監視] P2P地震情報API HTTPポーリング開始 (30秒間隔)');
+        poll();
+        pollEEW();
+        setInterval(poll,    POLL_INTERVAL);
+        setInterval(pollEEW, POLL_INTERVAL);
+    })();
 }
 
 module.exports = {
     formatIntensity,
     intensityToColor,
     prefNameFromCode,
+    eewScaleToText,
     buildJMAQuakeEmbed,
     extractStationsFromJMA,
     startEarthquakeMonitor,

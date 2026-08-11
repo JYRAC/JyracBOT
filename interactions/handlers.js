@@ -10,6 +10,76 @@ const {
     MessageFlags,
 } = require('discord.js');
 const { sendLog, checkBotPermissionsOrReply } = require('../utils/permissions');
+const { getTicketCategory } = require('../utils/ticketCategory');
+const { getTicketPanel } = require('../utils/ticketPanel');
+const { handleEntryMessageModal } = require('../commands/entryMessage');
+const { handleChangeNameButton, handleChangeNameModal } = require('../commands/changeName');
+const { handleAdjustmentModal, handleAdjustmentButton } = require('../commands/adjustment');
+
+/**
+ * チケットチャンネルを作成し、パネル埋め込み＋閉じるボタンを送信する共通処理
+ * ボタン形式（カテゴリー未登録）・セレクトメニュー形式（カテゴリー選択）の両方から呼ばれる
+ * @param {import('discord.js').ButtonInteraction|import('discord.js').StringSelectMenuInteraction} interaction 事前に reply 済み（ephemeral）であること
+ * @param {import('firebase-admin').firestore.Firestore} db
+ * @param {{adminRoleId: string, panelDesc: string, parentId?: string|null}} opts
+ */
+async function createTicketChannel(interaction, db, opts) {
+    const { adminRoleId, panelDesc, parentId } = opts;
+
+    if (await checkBotPermissionsOrReply(interaction, [
+        PermissionsBitField.Flags.ManageChannels,
+    ])) return;
+
+    try {
+        const channel = await interaction.guild.channels.create({
+            name: `🎫｜${interaction.user.username}`,
+            type: ChannelType.GuildText,
+            parent: parentId ?? undefined,
+            permissionOverwrites: [
+                { id: interaction.guild.id,  deny:  [PermissionsBitField.Flags.ViewChannel] },
+                { id: interaction.user.id,   allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
+                { id: adminRoleId,            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
+            ]
+        });
+
+        const ticketEmbed = new EmbedBuilder()
+            .setTitle('Ticket')
+            .addFields(
+                { name: '発行者',     value: `${interaction.user}` },
+                { name: 'メッセージ', value: panelDesc }
+            )
+            .setColor(0x9B59B6)
+            .setTimestamp();
+
+        await channel.send({
+            content: `<@&${adminRoleId}>`,
+            embeds: [ticketEmbed],
+            components: [
+                new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('t_close').setLabel('チケットを閉じる').setStyle(ButtonStyle.Danger)
+                )
+            ]
+        });
+
+        await interaction.editReply({ content: `✅ チケットを作成しました: ${channel}` });
+
+        sendLog(interaction.guild, new EmbedBuilder()
+            .setTitle('🎫 チケット作成ログ')
+            .addFields(
+                { name: '使用者',     value: `${interaction.user}`, inline: true },
+                { name: '使用コマンド', value: 'チケット作成ボタン', inline: true },
+                { name: '日時',       value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
+                { name: 'チャンネル', value: `${channel}`,          inline: false }
+            )
+            .setColor(0x3498DB)
+            .setTimestamp(),
+            db
+        );
+    } catch (e) {
+        console.error('[ticket] チャンネル作成エラー:', e);
+        await interaction.editReply({ content: '❌ チャンネルの作成に失敗しました。' });
+    }
+}
 
 // ─── ボタン操作 ────────────────────────────────────────────────
 
@@ -21,6 +91,16 @@ const { sendLog, checkBotPermissionsOrReply } = require('../utils/permissions');
  */
 async function handleButton(interaction, db, ticketMessages) {
     const { customId } = interaction;
+
+    // 名前変更ボタン（即座にモーダルを表示する必要があるため最初に処理する）
+    if (customId.startsWith('cn_') && !customId.startsWith('cn_modal_')) {
+        if (await handleChangeNameButton(interaction, db)) return;
+    }
+
+    // 調整さんパネルのボタン（回答 / 締め切り）
+    if (customId.startsWith('adj_')) {
+        if (await handleAdjustmentButton(interaction, db)) return;
+    }
 
     // 認証ボタン
     if (customId.startsWith('v_role_')) {
@@ -130,68 +210,23 @@ async function handleButton(interaction, db, ticketMessages) {
         return;
     }
 
-    // チケット作成ボタン
-    if (customId.startsWith('tkt_')) {
+    // チケット作成ボタン（カテゴリー未登録時のシンプルな1ボタン形式）
+    if (customId.startsWith('tkt_') && !customId.startsWith('tkt_cat_')) {
         const parts       = customId.split('_');
         const adminRoleId = parts[1];
         const key         = parts.slice(2).join('_');
 
-        // 実行前に権限を事前チェックし、未然にエラーを防ぐ
-        if (await checkBotPermissionsOrReply(interaction, [
-            PermissionsBitField.Flags.ManageChannels,
-        ])) return;
-
         await interaction.reply({ content: 'チケットチャンネルを作成しています...', flags: MessageFlags.Ephemeral });
-        try {
-            const channel = await interaction.guild.channels.create({
-                name: `🎫｜${interaction.user.username}`,
-                type: ChannelType.GuildText,
-                permissionOverwrites: [
-                    { id: interaction.guild.id,  deny:  [PermissionsBitField.Flags.ViewChannel] },
-                    { id: interaction.user.id,   allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
-                    { id: adminRoleId,            allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
-                ]
-            });
 
-            const customDesc = ticketMessages.get(key);
-            const panelDesc  = customDesc != null ? customDesc : '発行ありがとうございます。担当者が来るのを今しばらくお待ちください。';
-
-            const ticketEmbed = new EmbedBuilder()
-                .setTitle('📋 パネルでチケット発行')
-                .addFields(
-                    { name: '発行者',     value: `${interaction.user}` },
-                    { name: 'メッセージ', value: panelDesc }
-                )
-                .setColor(0x9B59B6)
-                .setTimestamp();
-
-            await channel.send({
-                content: `<@&${adminRoleId}>`,
-                embeds: [ticketEmbed],
-                components: [
-                    new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('t_close').setLabel('チケットを閉じる').setStyle(ButtonStyle.Danger)
-                    )
-                ]
-            });
-
-            await interaction.editReply({ content: `✅ チケットを作成しました: ${channel}` });
-
-            sendLog(interaction.guild, new EmbedBuilder()
-                .setTitle('🎫 チケット作成ログ')
-                .addFields(
-                    { name: '使用者',     value: `${interaction.user}`, inline: true },
-                    { name: '使用コマンド', value: 'チケット作成ボタン', inline: true },
-                    { name: '日時',       value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
-                    { name: 'チャンネル', value: `${channel}`,          inline: false }
-                )
-                .setColor(0x3498DB)
-                .setTimestamp(),
-                db
-            );
-        } catch {
-            await interaction.editReply({ content: '❌ チャンネルの作成に失敗しました。' });
+        let customDesc = ticketMessages.get(key);
+        if (customDesc === undefined) {
+            // Bot再起動でメモリキャッシュが消えている場合はFirestoreから復元する
+            const panel = await getTicketPanel(db, key);
+            customDesc = panel?.panelDesc ?? null;
         }
+        const panelDesc = customDesc != null ? customDesc : '発行ありがとうございます。担当者が来るのを今しばらくお待ちください。';
+
+        await createTicketChannel(interaction, db, { adminRoleId, panelDesc });
         return;
     }
 
@@ -239,6 +274,24 @@ async function handleButton(interaction, db, ticketMessages) {
  */
 async function handleModal(interaction, client, db, broadcastRoleMap) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    // /entry-message モーダル（入室時DMメッセージの設定）
+    if (interaction.customId === 'entry_message_modal') {
+        await handleEntryMessageModal(interaction, db);
+        return;
+    }
+
+    // 名前変更パネルのモーダル
+    if (interaction.customId.startsWith('cn_modal_')) {
+        await handleChangeNameModal(interaction, db);
+        return;
+    }
+
+    // /adjustment モーダル（日程調整パネルの作成）
+    if (interaction.customId === 'adjustment_modal') {
+        await handleAdjustmentModal(interaction, db);
+        return;
+    }
 
     // /request モーダル
     if (interaction.customId === 'req_modal') {
@@ -321,13 +374,38 @@ async function handleModal(interaction, client, db, broadcastRoleMap) {
  * セレクトメニューインタラクションを処理する
  * @param {import('discord.js').StringSelectMenuInteraction} interaction
  */
-async function handleSelectMenu(interaction) {
+async function handleSelectMenu(interaction, db) {
+    // チケットのカテゴリー選択（/ticket panel でカテゴリーが登録されている場合）
+    if (interaction.customId.startsWith('tkt_cat_')) {
+        const parts          = interaction.customId.split('_');
+        const defaultRoleId  = parts[2];
+        const key            = parts.slice(3).join('_');
+        const categoryName   = interaction.values[0];
+
+        await interaction.reply({ content: 'チケットチャンネルを作成しています...', flags: MessageFlags.Ephemeral });
+
+        const category = await getTicketCategory(db, interaction.guild.id, categoryName);
+        const panel = await getTicketPanel(db, key);
+        const fallbackDesc = panel?.panelDesc ?? null;
+
+        await createTicketChannel(interaction, db, {
+            adminRoleId: category?.adminRoleId ?? defaultRoleId,
+            panelDesc: category?.panelDesc ?? fallbackDesc ?? '発行ありがとうございます。担当者が来るのを今しばらくお待ちください。',
+            parentId: category?.parentId ?? null,
+        });
+        return;
+    }
+
     if (interaction.customId !== 'help_select') return;
 
     const value = interaction.values[0];
     const helpTexts = {
-        h_verify:    '**/verify**\nロール管理権限が必要です。ボタン付きの認証パネルを設置し、ユーザーが手軽にロールを獲得できるようにします。',
-        h_ticket:    '**/ticket**\nチャンネル管理権限が必要です。ユーザー個別の問い合わせ用プライベートチャンネルを開設するパネルを設置します。',
+        h_verify:    '**/verify**\nロール管理権限が必要です。パネル＋ボタン形式の認証パネルを設置します。ボタンを押すと指定したロールが付与されます。',
+        h_verifies:  '**/verifies**\nロール管理権限が必要です。最大15ロール対応のリアクション式認証パネルを設置します。`role-1`〜`role-15` の順に固定の絵文字（1️⃣2️⃣…🇪）と同期し、リアクションを押すと対応ロールが付与されます。',
+        h_ticket:    '**/ticket**\nチャンネル管理権限が必要です。\n・`panel`: チケットパネルを設置します。\n・`category-add` / `category-remove` / `category-list`: チケット作成時に選べるカテゴリー（対応ロールや作成先カテゴリーを個別に設定可）を管理します。カテゴリーが1件以上登録されている状態でパネルを設置すると、チケット作成時にセレクトメニューでカテゴリーを選べるようになります。',
+        h_changename:'**/change-name**\nニックネームの管理権限が必要です。名前変更パネルを設置します。ボタンを押すとモーダルが表示され、入力した名前が押した本人のニックネームに自動で変更されます。',
+        h_adjustment:'**/adjustment**\n「調整さん」風の日程調整パネルを作成します（最大4候補）。候補ごとの⭕🔺❌ボタンを押して回答し、作成者は🔒ボタンで締め切れます。',
+        h_entrymessage:'**/entry-message**\nモーダルで入力した内容を、以降このサーバーに参加した新規メンバーへ自動でDM送信します。',
         h_log:       '**/log**\n管理者権限が必要です。認証や一括削除のアクションが行われた際に送信されるログチャンネルの指定・解除を行います。',
         h_role:      '**/role-confirmation**\nモデレーター権限が必要です。対象のユーザーが現在持っている全ロールの一覧を表示します。',
         h_export:    '**/export**\nメッセージ管理権限が必要です。指定したチャンネルのメッセージを.txtファイルにエクスポートします。\nオプション: `channel` `limit(1〜10000)` `before` `after`',
