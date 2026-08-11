@@ -54,6 +54,38 @@ async function handleButton(interaction, db, ticketMessages) {
         return;
     }
 
+    // ロール解除ボタン
+    if (customId.startsWith('uv_role_')) {
+        const roleId = customId.split('_')[2];
+
+        // 実行前に権限を事前チェックし、未然にエラーを防ぐ
+        if (await checkBotPermissionsOrReply(interaction, [
+            PermissionsBitField.Flags.ManageRoles,
+        ])) return;
+
+        await interaction.reply({ content: '解除を処理しています...', flags: MessageFlags.Ephemeral });
+        try {
+            await interaction.member.roles.remove(roleId);
+            await interaction.editReply({ content: '✅ ロールを解除しました。' });
+
+            sendLog(interaction.guild, new EmbedBuilder()
+                .setTitle('🔓 解除ログ')
+                .addFields(
+                    { name: '使用者',     value: `${interaction.user}`, inline: true },
+                    { name: '使用コマンド', value: '解除ボタン',        inline: true },
+                    { name: '日時',       value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
+                    { name: '解除ロール', value: `<@&${roleId}>`,       inline: false }
+                )
+                .setColor(0xE74C3C)
+                .setTimestamp(),
+                db
+            );
+        } catch {
+            await interaction.editReply({ content: '❌ ロールの解除に失敗しました。Botのロール順位を確認してください。' });
+        }
+        return;
+    }
+
     // 一括削除確認
     if (customId.startsWith('bulk_yes_')) {
         const amount = parseInt(customId.split('_')[2]);
