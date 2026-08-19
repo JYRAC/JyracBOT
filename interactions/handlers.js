@@ -178,7 +178,15 @@ async function handleButton(interaction, db, ticketMessages) {
 
         await interaction.update({ content: 'メッセージを削除しています...', components: [] });
         try {
-            await interaction.channel.bulkDelete(amount, true);
+            if (amount === 1) {
+                // Discordのbulk delete APIは2件未満の削除に対応していないため、
+                // 1件のみの場合はチャンネル内の直近メッセージを個別に取得して削除する
+                const recent = await interaction.channel.messages.fetch({ limit: 1 });
+                const target = recent.first();
+                if (target) await target.delete();
+            } else {
+                await interaction.channel.bulkDelete(amount, true);
+            }
             sendLog(interaction.guild, new EmbedBuilder()
                 .setTitle('🗑️ メッセージ削除ログ')
                 .addFields(
