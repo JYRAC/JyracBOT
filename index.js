@@ -141,7 +141,7 @@ const commands = [
     new SlashCommandBuilder()
         .setName('delete')
         .setDescription('メッセージを一括削除します')
-        .addIntegerOption(o => o.setName('amount').setDescription('件数(1-100)').setRequired(true)),
+        .addIntegerOption(o => o.setName('amount').setDescription('件数(1-100)').setRequired(true).setMinValue(1).setMaxValue(100)),
 
     new SlashCommandBuilder()
         .setName('log')
