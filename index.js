@@ -270,9 +270,9 @@ const commands = [
 
 // ─── Bot 起動イベント ──────────────────────────────────────────
 client.once(Events.ClientReady, async () => {
-    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    // const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
-        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        // await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
         console.log('--- All Commands Registered ---');
     } catch (error) {
         console.error(error);
