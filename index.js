@@ -46,7 +46,6 @@ console.log(`[起動診断] @napi-rs/canvas 利用可否: ${isCanvasAvailable() 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
-console.log('[debug] Firebase initialized');
 
 // ─── セッションストア ──────────────────────────────────────────
 const broadcastRoleMap = new Map(); // userId → roleId
@@ -271,9 +270,9 @@ const commands = [
 
 // ─── Bot 起動イベント ──────────────────────────────────────────
 client.once(Events.ClientReady, async () => {
-    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    // const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
-        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+        // await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
         console.log('--- All Commands Registered ---');
     } catch (error) {
         console.error(error);
@@ -290,14 +289,10 @@ client.once(Events.ClientReady, async () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
-console.log('[debug] Discord client initialized');
-
 // ─── Keep Alive (Render用) ─────────────────────────────────────
 const app = express();
 app.get('/', (req, res) => res.send('Bot is online!'));
 app.listen(3000);
-
-console.log('[debug] Server started on port 3000');
 
 // ─── インタラクション受信 ──────────────────────────────────────
 client.on(Events.InteractionCreate, async interaction => {
@@ -368,8 +363,6 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 });
 
-console.log('[debug] Interaction handlers registered');
-
 // ─── 入室時DMメッセージ送信 ─────────────────────────────────────
 // /entry-message で設定された内容を、新規メンバー参加時にDMで送信する
 client.on(Events.GuildMemberAdd, async member => {
@@ -437,8 +430,6 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
         console.error('[認証パネル] ロール剥奪エラー:', e);
     }
 });
-
-console.log("[debug] All event handlers registered");
 
 // ─── Bot ログイン ──────────────────────────────────────────────
 client.login(process.env.DISCORD_TOKEN);
