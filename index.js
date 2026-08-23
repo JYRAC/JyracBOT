@@ -292,6 +292,14 @@ client.once(Events.ClientReady, async () => {
 // ─── Keep Alive (Render用) ─────────────────────────────────────
 const app = express();
 app.get('/', (req, res) => res.send('Bot is online!'));
+app.get('/health', (req, res) => {
+    const ready = client.isReady();
+    res.status(ready ? 200 : 503).json({
+        ready,
+        ping: ready ? client.ws.ping : null,
+        uptime: process.uptime(),
+    });
+});
 app.listen(3000);
 
 // ─── インタラクション受信 ──────────────────────────────────────
