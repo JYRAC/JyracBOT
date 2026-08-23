@@ -431,5 +431,20 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
     }
 });
 
+client.on('debug', console.log);
+client.on('warn', console.warn);
+client.on('error', (err) => console.error('[client error]', err));
+client.on('shardError', (err) => console.error('[shardError]', err));
+client.on('shardDisconnect', (event, id) => console.error('[shardDisconnect]', id, event));
+
 // ─── Bot ログイン ──────────────────────────────────────────────
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN)
+    .then(() => console.log('[LOGIN OK]'))
+    .catch(err => console.error('[LOGIN REJECTED]', err));
+
+process.on('unhandledRejection', (reason) => {
+    console.error('[unhandledRejection]', reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('[uncaughtException]', err);
+});
