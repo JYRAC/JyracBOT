@@ -439,9 +439,11 @@ client.on('shardDisconnect', (event, id) => console.error('[shardDisconnect]', i
 
 // ─── Bot ログイン ──────────────────────────────────────────────
 fetch('https://discord.com/api/v10/gateway')
-    .then(r => r.json())
-    .then(d => console.log('[NETWORK TEST OK]', d))
+    .then(r => r.text())
+    .then(t => console.log('[NETWORK TEST BODY]', t.slice(0, 500)))
     .catch(e => console.error('[NETWORK TEST FAILED]', e));
+
+client.login(process.env.DISCORD_TOKEN);
 
 client.login(process.env.DISCORD_TOKEN)
     .then(() => console.log('[LOGIN OK]'))
